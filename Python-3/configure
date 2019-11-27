@@ -7758,7 +7758,7 @@ then
 	Linux*|GNU*) LINKFORSHARED="-Xlinker -export-dynamic";;
 	# -u libsys_s pulls in all symbols in libsys
 	Darwin/*)
-		LINKFORSHARED="$extra_undefs -framework CoreFoundation"
+		LINKFORSHARED="$extra_undefs"
 		if test "$enable_framework"
 		then
 			LINKFORSHARED="$LINKFORSHARED "'$(PYTHONFRAMEWORKDIR)/Versions/$(VERSION)/$(PYTHONFRAMEWORK)'
