@@ -1,0 +1,10 @@
+--- pyconfig.h.orig	2019-11-27 03:59:08.000000000 +0100
++++ pyconfig.h	2019-11-27 03:59:22.000000000 +0100
+@@ -961,6 +961,7 @@
+ 
+ /* Define to printf format modifier for long long type */
+ /* #undef PY_FORMAT_LONG_LONG */
++#define PY_FORMAT_LONG_LONG "ll"
+ 
+ /* Define to printf format modifier for Py_ssize_t */
+ #define PY_FORMAT_SIZE_T "z"
