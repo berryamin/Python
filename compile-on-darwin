@@ -1,5 +1,18 @@
 #!/bin/bash
 
+# SEE
+# 
+# https://vstinner.github.io/contrib-cpython-2017q2-part1.html
+# Rename PYTHON_FOR_GEN to PYTHON_FOR_REGEN
+#
+# https://bugs.python.org/file43829/py_for_gen_26662_3.patch
+# Add PYTHON_FOR_GEN
+#
+# https://bugs.python.org/file44732/PYTHON_FOR_GEN.patch
+# Configure now searches for commands called python2.7, python2, and python,
+and sets PYTHON_FOR_GEN to the result
+#
+
 
 source /Applications/Momentics.app/bbndk-env_10_3_1_995.sh
 
@@ -10,6 +23,8 @@ export PBTARGETARCH=arm-unknown-nto-qnx8.0.0eabi
 
 export PATH="/Applications/Momentics.app/host_10_3_1_12/darwin/x86/usr/bin:/Users/testuser/Library/Research In Motion/BlackBerry Native SDK/bin:/Applications/Momentics.app/features//jre/Contents/Home/bin:/Applications/Momentics.app/host_10_3_1_12/darwin/x86/usr/python32/bin:/Applications/Momentics.app/host_10_3_1_12/darwin/x86/usr/bin:/Users/testuser/Library/Research In Motion/BlackBerry Native SDK/bin:/Applications/Momentics.app/features/com.qnx.tools.jre.macosx.x86_64_1.7.0.51/jre/Contents/Home/bin:/Applications/Momentics.app/host_10_3_1_12/darwin/x86/usr/python32/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Library/Frameworks/Mono.framework/Versions/Current/Commands:/Applications/Momentics.app/host_10_3_1_12/darwin/x86/usr/bin:/Users/testuser/Library/Research In Motion/BlackBerry Native SDK/bin:/Applications/Momentics.app/features/com.qnx.tools.jre.macosx.x86_64_1.7.0.51/jre/Contents/Home/bin:/Applications/Momentics.app/host_10_3_1_12/darwin/x86/usr/python32/bin:~/xsh/bin"
 
+make 
+exit 0
 
 type hg || {
 	echo
