@@ -1,6 +1,13 @@
 #!/bin/bash
 
 # SEE
+#
+#
+# https://bugs.python.org/issue22625
+# When cross-compiling, don't try to execute binaries
+# 
+# https://bugs.python.org/issue19142
+# Cross-compile fails trying to execute foreign pgen on build host
 # 
 # https://vstinner.github.io/contrib-cpython-2017q2-part1.html
 # Rename PYTHON_FOR_GEN to PYTHON_FOR_REGEN
@@ -11,6 +18,10 @@
 # https://bugs.python.org/file44732/PYTHON_FOR_GEN.patch
 # Configure now searches for commands called python2.7, python2, and python,
 and sets PYTHON_FOR_GEN to the result
+
+#
+# https://bugs.python.org/issue35808
+# Let's retire PGEN
 #
 
 

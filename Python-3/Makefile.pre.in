@@ -233,7 +233,6 @@ LIBFFI_INCLUDEDIR=	@LIBFFI_INCLUDEDIR@
 
 ##########################################################################
 # Parser
-PGEN=		Parser/pgen$(EXE)
 HOSTPGEN=	$(PGEN)
 
 POBJS=		\
@@ -242,29 +241,13 @@ POBJS=		\
 		Parser/listnode.o \
 		Parser/node.o \
 		Parser/parser.o \
-		Parser/parsetok.o \
-		Parser/bitset.o \
-		Parser/metagrammar.o \
-		Parser/firstsets.o \
-		Parser/grammar.o \
-		Parser/pgen.o
+		Parser/parsetok.o
 
 PARSER_OBJS=	$(POBJS) Parser/myreadline.o Parser/tokenizer.o
-
-PGOBJS=		\
-		Objects/obmalloc.o \
-		Python/dynamic_annotations.o \
-		Python/mysnprintf.o \
-		Python/pyctype.o \
-		Parser/tokenizer_pgen.o \
-		Parser/printgrammar.o \
-		Parser/pgenmain.o
 
 PARSER_HEADERS= \
 		Parser/parser.h \
 		Parser/tokenizer.h
-
-PGENOBJS=	$(PGENMAIN) $(POBJS) $(PGOBJS)
 
 ##########################################################################
 # AST
@@ -592,18 +575,6 @@ Parser/pgen.stamp: $(PGEN) $(GRAMMAR_INPUT)
 		$(HOSTPGEN) $(GRAMMAR_INPUT) $(GRAMMAR_H) $(GRAMMAR_C)
 		-touch Parser/pgen.stamp
 
-$(PGEN):	$(PGENOBJS)
-		$(CC) $(OPT) $(PY_LDFLAGS) $(PGENOBJS) $(LIBS) -o $(PGEN)
-
-Parser/grammar.o:	$(srcdir)/Parser/grammar.c \
-				$(srcdir)/Include/token.h \
-				$(srcdir)/Include/grammar.h
-Parser/metagrammar.o:	$(srcdir)/Parser/metagrammar.c
-
-Parser/tokenizer_pgen.o:	$(srcdir)/Parser/tokenizer.c
-
-Parser/pgenmain.o:	$(srcdir)/Include/parsetok.h
-
 $(AST_H): $(AST_ASDL) $(ASDLGEN_FILES)
 	$(ASDLGEN) -h $(AST_H_DIR) $(AST_ASDL)
 
@@ -699,7 +670,6 @@ PYTHON_HEADERS= \
 		Include/longobject.h \
 		Include/marshal.h \
 		Include/memoryobject.h \
-		Include/metagrammar.h \
 		Include/methodobject.h \
 		Include/modsupport.h \
 		Include/moduleobject.h \
@@ -710,7 +680,6 @@ PYTHON_HEADERS= \
 		Include/osdefs.h \
 		Include/parsetok.h \
 		Include/patchlevel.h \
-		Include/pgen.h \
 		Include/pgenheaders.h \
 		Include/pyarena.h \
 		Include/pyatomic.h \
@@ -1254,7 +1223,7 @@ profile-removal:
 	find . -name '*.gc??' -exec rm -f {} ';'
 
 clobber: clean profile-removal
-	-rm -f $(BUILDPYTHON) $(PGEN) $(LIBRARY) $(LDLIBRARY) $(DLLLIBRARY) \
+	-rm -f $(BUILDPYTHON) $(LIBRARY) $(LDLIBRARY) $(DLLLIBRARY) \
 		tags TAGS Parser/pgen.stamp \
 		config.cache config.log pyconfig.h Modules/config.c
 	-rm -rf build platform
@@ -1334,6 +1303,13 @@ Python/thread.o: @THREADHEADERS@
 .PHONY: frameworkaltinstallunixtools recheck autoconf clean clobber distclean
 .PHONY: smelly funny patchcheck
 .PHONY: gdbhooks
+.PHONY: regen-grammar
+
+# Regenerate Include/graminit.h and Python/graminit.c
+# from Grammar/Grammar using pgen2
+regen-grammar:
+	@$(MKDIR_P) Include
+	
 
 # IF YOU PUT ANYTHING HERE IT WILL GO AWAY
 # Local Variables:

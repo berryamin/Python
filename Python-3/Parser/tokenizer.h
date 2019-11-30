@@ -52,10 +52,8 @@ struct tok_state {
     char *encoding;         /* Source encoding. */
     int cont_line;          /* whether we are in a continuation line. */
     const char* line_start;     /* pointer to start of current line */
-#ifndef PGEN
     PyObject *decoding_readline; /* open(...).readline */
     PyObject *decoding_buffer;
-#endif
     const char* enc;        /* Encoding for the current str. */
     const char* str;
     const char* input; /* Tokenizer's newline translated copy of the string. */
