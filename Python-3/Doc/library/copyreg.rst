@@ -9,9 +9,10 @@
    module: pickle
    module: copy
 
-The :mod:`copyreg` module provides support for the :mod:`pickle` module.  The
-:mod:`copy` module is likely to use this in the future as well.  It provides
-configuration information about object constructors which are not classes.
+The :mod:`copyreg` module offers a way to define fuctions used while pickling
+specific objects.  The :mod:`pickle` and :mod:`copy` modules use those functions
+when pickling/copying those objects.  The module provides configuration
+information about object constructors which are not classes.
 Such constructors may be factory functions or class instances.
 
 
@@ -32,6 +33,30 @@ Such constructors may be factory functions or class instances.
    returned by *function* at pickling time.  :exc:`TypeError` will be raised if
    *object* is a class or *constructor* is not callable.
 
-   See the :mod:`pickle` module for more details on the interface expected of
-   *function* and *constructor*.
+   See the :mod:`pickle` module for more details on the interface
+   expected of *function* and *constructor*.  Note that the
+   :attr:`~pickle.Pickler.dispatch_table` attribute of a pickler
+   object or subclass of :class:`pickle.Pickler` can also be used for
+   declaring reduction functions.
 
+Example
+-------
+
+The example below would like to show how to register a pickle function and how
+it will be used:
+
+   >>> import copyreg, copy, pickle
+   >>> class C(object):
+   ...     def __init__(self, a):
+   ...         self.a = a
+   ...
+   >>> def pickle_c(c):
+   ...     print("pickling a C instance...")
+   ...     return C, (c.a,)
+   ...
+   >>> copyreg.pickle(C, pickle_c)
+   >>> c = C(1)
+   >>> d = copy.copy(c)
+   pickling a C instance...
+   >>> p = pickle.dumps(c)
+   pickling a C instance...

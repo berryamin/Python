@@ -4,6 +4,9 @@
 .. module:: math
    :synopsis: Mathematical functions (sin() etc.).
 
+.. testsetup::
+
+   from math import fsum
 
 This module is always available.  It provides access to the mathematical
 functions defined by the C standard.
@@ -28,14 +31,14 @@ Number-theoretic and representation functions
 
    Return the ceiling of *x*, the smallest integer greater than or equal to *x*.
    If *x* is not a float, delegates to ``x.__ceil__()``, which should return an
-   :class:`Integral` value.
+   :class:`~numbers.Integral` value.
 
 
 .. function:: copysign(x, y)
 
-   Return *x* with the sign of *y*.  On a platform that supports
-   signed zeros, ``copysign(1.0, -0.0)`` returns *-1.0*.
-
+   Return a float with the magnitude (absolute value) of *x* but the sign of
+   *y*.  On platforms that support signed zeros, ``copysign(1.0, -0.0)``
+   returns *-1.0*.
 
 .. function:: fabs(x)
 
@@ -50,7 +53,7 @@ Number-theoretic and representation functions
 
    Return the floor of *x*, the largest integer less than or equal to *x*.
    If *x* is not a float, delegates to ``x.__floor__()``, which should return an
-   :class:`Integral` value.
+   :class:`~numbers.Integral` value.
 
 
 .. function:: fmod(x, y)
@@ -130,8 +133,9 @@ Number-theoretic and representation functions
 
 .. function:: trunc(x)
 
-   Return the :class:`Real` value *x* truncated to an :class:`Integral` (usually
-   an integer). Delegates to ``x.__trunc__()``.
+   Return the :class:`~numbers.Real` value *x* truncated to an
+   :class:`~numbers.Integral` (usually an integer). Delegates to
+   ``x.__trunc__()``.
 
 
 Note that :func:`frexp` and :func:`modf` have a different call/return pattern
@@ -184,6 +188,19 @@ Power and logarithmic functions
    result is calculated in a way which is accurate for *x* near zero.
 
 
+.. function:: log2(x)
+
+   Return the base-2 logarithm of *x*. This is usually more accurate than
+   ``log(x, 2)``.
+
+   .. versionadded:: 3.3
+
+   .. seealso::
+
+      :meth:`int.bit_length` returns the number of bits necessary to represent
+      an integer in binary, excluding the sign and leading zeros.
+
+
 .. function:: log10(x)
 
    Return the base-10 logarithm of *x*.  This is usually more accurate
@@ -198,6 +215,10 @@ Power and logarithmic functions
    when ``x`` is a zero or a NaN.  If both ``x`` and ``y`` are finite,
    ``x`` is negative, and ``y`` is not an integer then ``pow(x, y)``
    is undefined, and raises :exc:`ValueError`.
+
+   Unlike the built-in ``**`` operator, :func:`math.pow` converts both
+   its arguments to type :class:`float`.  Use ``**`` or the built-in
+   :func:`pow` function for computing exact integer powers.
 
 
 .. function:: sqrt(x)

@@ -15,8 +15,8 @@ here = os.path.dirname(__file__)
 CERT_localhost = os.path.join(here, 'keycert.pem')
 # Self-signed cert file for 'fakehostname'
 CERT_fakehostname = os.path.join(here, 'keycert2.pem')
-# Root cert file (CA) for svn.python.org's cert
-CACERT_svn_python_org = os.path.join(here, 'https_svn_python_org_root.pem')
+# Self-signed cert file for self-signed.pythontest.net
+CERT_selfsigned_pythontestdotnet = os.path.join(here, 'selfsigned_pythontestdotnet.pem')
 
 HOST = support.HOST
 
@@ -51,8 +51,8 @@ class EPipeSocket(FakeSocket):
     def close(self):
         pass
 
-class NoEOFStringIO(io.BytesIO):
-    """Like StringIO, but raises AssertionError on EOF.
+class NoEOFBytesIO(io.BytesIO):
+    """Like BytesIO, but raises AssertionError on EOF.
 
     This is used below to test that http.client doesn't try to read
     more from the underlying file than it should.
@@ -99,12 +99,67 @@ class HeaderTests(TestCase):
                 conn.request('POST', '/', body, headers)
                 self.assertEqual(conn._buffer.count[header.lower()], 1)
 
+    def test_content_length_0(self):
+
+        class ContentLengthChecker(list):
+            def __init__(self):
+                list.__init__(self)
+                self.content_length = None
+            def append(self, item):
+                kv = item.split(b':', 1)
+                if len(kv) > 1 and kv[0].lower() == b'content-length':
+                    self.content_length = kv[1].strip()
+                list.append(self, item)
+
+        # POST with empty body
+        conn = client.HTTPConnection('example.com')
+        conn.sock = FakeSocket(None)
+        conn._buffer = ContentLengthChecker()
+        conn.request('POST', '/', '')
+        self.assertEqual(conn._buffer.content_length, b'0',
+                        'Header Content-Length not set')
+
+        # PUT request with empty body
+        conn = client.HTTPConnection('example.com')
+        conn.sock = FakeSocket(None)
+        conn._buffer = ContentLengthChecker()
+        conn.request('PUT', '/', '')
+        self.assertEqual(conn._buffer.content_length, b'0',
+                        'Header Content-Length not set')
+
     def test_putheader(self):
         conn = client.HTTPConnection('example.com')
         conn.sock = FakeSocket(None)
         conn.putrequest('GET','/')
         conn.putheader('Content-length', 42)
-        self.assertTrue(b'Content-length: 42' in conn._buffer)
+        self.assertIn(b'Content-length: 42', conn._buffer)
+
+        conn.putheader('Foo', ' bar ')
+        self.assertIn(b'Foo:  bar ', conn._buffer)
+        conn.putheader('Bar', '\tbaz\t')
+        self.assertIn(b'Bar: \tbaz\t', conn._buffer)
+        conn.putheader('Authorization', 'Bearer mytoken')
+        self.assertIn(b'Authorization: Bearer mytoken', conn._buffer)
+        conn.putheader('IterHeader', 'IterA', 'IterB')
+        self.assertIn(b'IterHeader: IterA\r\n\tIterB', conn._buffer)
+        conn.putheader('LatinHeader', b'\xFF')
+        self.assertIn(b'LatinHeader: \xFF', conn._buffer)
+        conn.putheader('Utf8Header', b'\xc3\x80')
+        self.assertIn(b'Utf8Header: \xc3\x80', conn._buffer)
+        conn.putheader('C1-Control', b'next\x85line')
+        self.assertIn(b'C1-Control: next\x85line', conn._buffer)
+        conn.putheader('Embedded-Fold-Space', 'is\r\n allowed')
+        self.assertIn(b'Embedded-Fold-Space: is\r\n allowed', conn._buffer)
+        conn.putheader('Embedded-Fold-Tab', 'is\r\n\tallowed')
+        self.assertIn(b'Embedded-Fold-Tab: is\r\n\tallowed', conn._buffer)
+        conn.putheader('Key Space', 'value')
+        self.assertIn(b'Key Space: value', conn._buffer)
+        conn.putheader('KeySpace ', 'value')
+        self.assertIn(b'KeySpace : value', conn._buffer)
+        conn.putheader(b'Nonbreak\xa0Space', 'value')
+        self.assertIn(b'Nonbreak\xa0Space: value', conn._buffer)
+        conn.putheader(b'\xa0NonbreakSpace', 'value')
+        self.assertIn(b'\xa0NonbreakSpace: value', conn._buffer)
 
     def test_ipv6host_header(self):
         # Default host header on IPv6 transaction should wrapped by [] if
@@ -125,6 +180,35 @@ class HeaderTests(TestCase):
         conn.request('GET', '/foo')
         self.assertTrue(sock.data.startswith(expected))
 
+    def test_invalid_headers(self):
+        conn = client.HTTPConnection('example.com')
+        conn.sock = FakeSocket('')
+        conn.putrequest('GET', '/')
+
+        # http://tools.ietf.org/html/rfc7230#section-3.2.4, whitespace is no
+        # longer allowed in header names
+        cases = (
+            (b'Invalid\r\nName', b'ValidValue'),
+            (b'Invalid\rName', b'ValidValue'),
+            (b'Invalid\nName', b'ValidValue'),
+            (b'\r\nInvalidName', b'ValidValue'),
+            (b'\rInvalidName', b'ValidValue'),
+            (b'\nInvalidName', b'ValidValue'),
+            (b' InvalidName', b'ValidValue'),
+            (b'\tInvalidName', b'ValidValue'),
+            (b'Invalid:Name', b'ValidValue'),
+            (b':InvalidName', b'ValidValue'),
+            (b'ValidName', b'Invalid\r\nValue'),
+            (b'ValidName', b'Invalid\rValue'),
+            (b'ValidName', b'Invalid\nValue'),
+            (b'ValidName', b'InvalidValue\r\n'),
+            (b'ValidName', b'InvalidValue\r'),
+            (b'ValidName', b'InvalidValue\n'),
+        )
+        for name, value in cases:
+            with self.assertRaisesRegex(ValueError, 'Invalid header'):
+                conn.putheader(name, value)
+
 
 class BasicTest(TestCase):
     def test_status_lines(self):
@@ -134,8 +218,14 @@ class BasicTest(TestCase):
         sock = FakeSocket(body)
         resp = client.HTTPResponse(sock)
         resp.begin()
+        self.assertEqual(resp.read(0), b'')  # Issue #20007
+        self.assertFalse(resp.isclosed())
+        self.assertFalse(resp.closed)
         self.assertEqual(resp.read(), b"Text")
         self.assertTrue(resp.isclosed())
+        self.assertFalse(resp.closed)
+        resp.close()
+        self.assertTrue(resp.closed)
 
         body = "HTTP/1.1 400.100 Not Ok\r\n\r\nText"
         sock = FakeSocket(body)
@@ -147,7 +237,7 @@ class BasicTest(TestCase):
         self.assertEqual(repr(exc), '''BadStatusLine("\'\'",)''')
 
     def test_partial_reads(self):
-        # if we have a lenght, the system knows when to close itself
+        # if we have a length, the system knows when to close itself
         # same behaviour than when we read the whole thing with read()
         body = "HTTP/1.1 200 Ok\r\nContent-Length: 4\r\n\r\nText"
         sock = FakeSocket(body)
@@ -157,18 +247,113 @@ class BasicTest(TestCase):
         self.assertFalse(resp.isclosed())
         self.assertEqual(resp.read(2), b'xt')
         self.assertTrue(resp.isclosed())
+        self.assertFalse(resp.closed)
+        resp.close()
+        self.assertTrue(resp.closed)
+
+    def test_partial_readintos(self):
+        # if we have a length, the system knows when to close itself
+        # same behaviour than when we read the whole thing with read()
+        body = "HTTP/1.1 200 Ok\r\nContent-Length: 4\r\n\r\nText"
+        sock = FakeSocket(body)
+        resp = client.HTTPResponse(sock)
+        resp.begin()
+        b = bytearray(2)
+        n = resp.readinto(b)
+        self.assertEqual(n, 2)
+        self.assertEqual(bytes(b), b'Te')
+        self.assertFalse(resp.isclosed())
+        n = resp.readinto(b)
+        self.assertEqual(n, 2)
+        self.assertEqual(bytes(b), b'xt')
+        self.assertTrue(resp.isclosed())
+        self.assertFalse(resp.closed)
+        resp.close()
+        self.assertTrue(resp.closed)
+
+    def test_partial_reads_no_content_length(self):
+        # when no length is present, the socket should be gracefully closed when
+        # all data was read
+        body = "HTTP/1.1 200 Ok\r\n\r\nText"
+        sock = FakeSocket(body)
+        resp = client.HTTPResponse(sock)
+        resp.begin()
+        self.assertEqual(resp.read(2), b'Te')
+        self.assertFalse(resp.isclosed())
+        self.assertEqual(resp.read(2), b'xt')
+        self.assertEqual(resp.read(1), b'')
+        self.assertTrue(resp.isclosed())
+        self.assertFalse(resp.closed)
+        resp.close()
+        self.assertTrue(resp.closed)
+
+    def test_partial_readintos_no_content_length(self):
+        # when no length is present, the socket should be gracefully closed when
+        # all data was read
+        body = "HTTP/1.1 200 Ok\r\n\r\nText"
+        sock = FakeSocket(body)
+        resp = client.HTTPResponse(sock)
+        resp.begin()
+        b = bytearray(2)
+        n = resp.readinto(b)
+        self.assertEqual(n, 2)
+        self.assertEqual(bytes(b), b'Te')
+        self.assertFalse(resp.isclosed())
+        n = resp.readinto(b)
+        self.assertEqual(n, 2)
+        self.assertEqual(bytes(b), b'xt')
+        n = resp.readinto(b)
+        self.assertEqual(n, 0)
+        self.assertTrue(resp.isclosed())
+
+    def test_partial_reads_incomplete_body(self):
+        # if the server shuts down the connection before the whole
+        # content-length is delivered, the socket is gracefully closed
+        body = "HTTP/1.1 200 Ok\r\nContent-Length: 10\r\n\r\nText"
+        sock = FakeSocket(body)
+        resp = client.HTTPResponse(sock)
+        resp.begin()
+        self.assertEqual(resp.read(2), b'Te')
+        self.assertFalse(resp.isclosed())
+        self.assertEqual(resp.read(2), b'xt')
+        self.assertEqual(resp.read(1), b'')
+        self.assertTrue(resp.isclosed())
+
+    def test_partial_readintos_incomplete_body(self):
+        # if the server shuts down the connection before the whole
+        # content-length is delivered, the socket is gracefully closed
+        body = "HTTP/1.1 200 Ok\r\nContent-Length: 10\r\n\r\nText"
+        sock = FakeSocket(body)
+        resp = client.HTTPResponse(sock)
+        resp.begin()
+        b = bytearray(2)
+        n = resp.readinto(b)
+        self.assertEqual(n, 2)
+        self.assertEqual(bytes(b), b'Te')
+        self.assertFalse(resp.isclosed())
+        n = resp.readinto(b)
+        self.assertEqual(n, 2)
+        self.assertEqual(bytes(b), b'xt')
+        n = resp.readinto(b)
+        self.assertEqual(n, 0)
+        self.assertTrue(resp.isclosed())
+        self.assertFalse(resp.closed)
+        resp.close()
+        self.assertTrue(resp.closed)
 
     def test_host_port(self):
         # Check invalid host_port
 
-        for hp in ("www.python.org:abc", "www.python.org:"):
+        for hp in ("www.python.org:abc", "user:password@www.python.org"):
             self.assertRaises(client.InvalidURL, client.HTTPConnection, hp)
 
         for hp, h, p in (("[fe80::207:e9ff:fe9b]:8000",
                           "fe80::207:e9ff:fe9b", 8000),
                          ("www.python.org:80", "www.python.org", 80),
+                         ("www.python.org:", "www.python.org", 80),
                          ("www.python.org", "www.python.org", 80),
-                         ("[fe80::207:e9ff:fe9b]", "fe80::207:e9ff:fe9b", 80)):
+                         ("[fe80::207:e9ff:fe9b]", "fe80::207:e9ff:fe9b", 80),
+                         ("[fe80::207:e9ff:fe9b]:", "fe80::207:e9ff:fe9b", 80)):
             c = client.HTTPConnection(hp)
             self.assertEqual(h, c.host)
             self.assertEqual(p, c.port)
@@ -198,11 +383,35 @@ class BasicTest(TestCase):
             'HTTP/1.1 200 OK\r\n'
             'Content-Length: 14432\r\n'
             '\r\n',
-            NoEOFStringIO)
+            NoEOFBytesIO)
         resp = client.HTTPResponse(sock, method="HEAD")
         resp.begin()
         if resp.read():
             self.fail("Did not expect response from HEAD request")
+
+    def test_readinto_head(self):
+        # Test that the library doesn't attempt to read any data
+        # from a HEAD request.  (Tickles SF bug #622042.)
+        sock = FakeSocket(
+            'HTTP/1.1 200 OK\r\n'
+            'Content-Length: 14432\r\n'
+            '\r\n',
+            NoEOFBytesIO)
+        resp = client.HTTPResponse(sock, method="HEAD")
+        resp.begin()
+        b = bytearray(5)
+        if resp.readinto(b) != 0:
+            self.fail("Did not expect response from HEAD request")
+        self.assertEqual(bytes(b), b'\x00'*5)
+
+    def test_too_many_headers(self):
+        headers = '\r\n'.join('Header%d: foo' % i
+                              for i in range(client._MAXHEADERS + 1)) + '\r\n'
+        text = ('HTTP/1.1 200 OK\r\n' + headers)
+        s = FakeSocket(text)
+        r = client.HTTPResponse(s)
+        self.assertRaisesRegex(client.HTTPException,
+                               r"got more than \d+ headers", r.begin)
 
     def test_send_file(self):
         expected = (b'GET /foo HTTP/1.1\r\nHost: example.com\r\n'
@@ -229,6 +438,27 @@ class BasicTest(TestCase):
         sock.data = b''
         conn.send(io.BytesIO(expected))
         self.assertEqual(expected, sock.data)
+
+    def test_send_updating_file(self):
+        def data():
+            yield 'data'
+            yield None
+            yield 'data_two'
+
+        class UpdatingFile():
+            mode = 'r'
+            d = data()
+            def read(self, blocksize=-1):
+                return self.d.__next__()
+
+        expected = b'data'
+
+        conn = client.HTTPConnection('example.com')
+        sock = FakeSocket("")
+        conn.sock = sock
+        conn.send(UpdatingFile())
+        self.assertEqual(sock.data, expected)
+
 
     def test_send_iter(self):
         expected = b'GET /foo HTTP/1.1\r\nHost: example.com\r\n' \
@@ -259,14 +489,27 @@ class BasicTest(TestCase):
             'Transfer-Encoding: chunked\r\n\r\n'
             'a\r\n'
             'hello worl\r\n'
-            '1\r\n'
-            'd\r\n'
+            '3\r\n'
+            'd! \r\n'
+            '8\r\n'
+            'and now \r\n'
+            '22\r\n'
+            'for something completely different\r\n'
         )
+        expected = b'hello world! and now for something completely different'
         sock = FakeSocket(chunked_start + '0\r\n')
         resp = client.HTTPResponse(sock, method="GET")
         resp.begin()
-        self.assertEqual(resp.read(), b'hello world')
+        self.assertEqual(resp.read(), expected)
         resp.close()
+
+        # Various read sizes
+        for n in range(1, 12):
+            sock = FakeSocket(chunked_start + '0\r\n')
+            resp = client.HTTPResponse(sock, method="GET")
+            resp.begin()
+            self.assertEqual(resp.read(n) + resp.read(n) + resp.read(), expected)
+            resp.close()
 
         for x in ('', 'foo\r\n'):
             sock = FakeSocket(chunked_start + x)
@@ -275,9 +518,64 @@ class BasicTest(TestCase):
             try:
                 resp.read()
             except client.IncompleteRead as i:
-                self.assertEqual(i.partial, b'hello world')
-                self.assertEqual(repr(i),'IncompleteRead(11 bytes read)')
-                self.assertEqual(str(i),'IncompleteRead(11 bytes read)')
+                self.assertEqual(i.partial, expected)
+                expected_message = 'IncompleteRead(%d bytes read)' % len(expected)
+                self.assertEqual(repr(i), expected_message)
+                self.assertEqual(str(i), expected_message)
+            else:
+                self.fail('IncompleteRead expected')
+            finally:
+                resp.close()
+
+    def test_readinto_chunked(self):
+        chunked_start = (
+            'HTTP/1.1 200 OK\r\n'
+            'Transfer-Encoding: chunked\r\n\r\n'
+            'a\r\n'
+            'hello worl\r\n'
+            '3\r\n'
+            'd! \r\n'
+            '8\r\n'
+            'and now \r\n'
+            '22\r\n'
+            'for something completely different\r\n'
+        )
+        expected = b'hello world! and now for something completely different'
+        nexpected = len(expected)
+        b = bytearray(128)
+
+        sock = FakeSocket(chunked_start + '0\r\n')
+        resp = client.HTTPResponse(sock, method="GET")
+        resp.begin()
+        n = resp.readinto(b)
+        self.assertEqual(b[:nexpected], expected)
+        self.assertEqual(n, nexpected)
+        resp.close()
+
+        # Various read sizes
+        for n in range(1, 12):
+            sock = FakeSocket(chunked_start + '0\r\n')
+            resp = client.HTTPResponse(sock, method="GET")
+            resp.begin()
+            m = memoryview(b)
+            i = resp.readinto(m[0:n])
+            i += resp.readinto(m[i:n + i])
+            i += resp.readinto(m[i:])
+            self.assertEqual(b[:nexpected], expected)
+            self.assertEqual(i, nexpected)
+            resp.close()
+
+        for x in ('', 'foo\r\n'):
+            sock = FakeSocket(chunked_start + x)
+            resp = client.HTTPResponse(sock, method="GET")
+            resp.begin()
+            try:
+                n = resp.readinto(b)
+            except client.IncompleteRead as i:
+                self.assertEqual(i.partial, expected)
+                expected_message = 'IncompleteRead(%d bytes read)' % len(expected)
+                self.assertEqual(repr(i), expected_message)
+                self.assertEqual(str(i), expected_message)
             else:
                 self.fail('IncompleteRead expected')
             finally:
@@ -299,6 +597,32 @@ class BasicTest(TestCase):
         self.assertEqual(resp.status, 200)
         self.assertEqual(resp.reason, 'OK')
         self.assertTrue(resp.isclosed())
+        self.assertFalse(resp.closed)
+        resp.close()
+        self.assertTrue(resp.closed)
+
+    def test_readinto_chunked_head(self):
+        chunked_start = (
+            'HTTP/1.1 200 OK\r\n'
+            'Transfer-Encoding: chunked\r\n\r\n'
+            'a\r\n'
+            'hello world\r\n'
+            '1\r\n'
+            'd\r\n'
+        )
+        sock = FakeSocket(chunked_start + '0\r\n')
+        resp = client.HTTPResponse(sock, method="HEAD")
+        resp.begin()
+        b = bytearray(5)
+        n = resp.readinto(b)
+        self.assertEqual(n, 0)
+        self.assertEqual(bytes(b), b'\x00'*5)
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(resp.reason, 'OK')
+        self.assertTrue(resp.isclosed())
+        self.assertFalse(resp.closed)
+        resp.close()
+        self.assertTrue(resp.closed)
 
     def test_negative_content_length(self):
         sock = FakeSocket(
@@ -306,7 +630,7 @@ class BasicTest(TestCase):
         resp = client.HTTPResponse(sock, method="GET")
         resp.begin()
         self.assertEqual(resp.read(), b'Hello\r\n')
-        resp.close()
+        self.assertTrue(resp.isclosed())
 
     def test_incomplete_read(self):
         sock = FakeSocket('HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nHello\r\n')
@@ -320,10 +644,9 @@ class BasicTest(TestCase):
                              "IncompleteRead(7 bytes read, 3 more expected)")
             self.assertEqual(str(i),
                              "IncompleteRead(7 bytes read, 3 more expected)")
+            self.assertTrue(resp.isclosed())
         else:
             self.fail('IncompleteRead expected')
-        finally:
-            resp.close()
 
     def test_epipe(self):
         sock = EPipeSocket(
@@ -366,6 +689,18 @@ class BasicTest(TestCase):
         resp = client.HTTPResponse(FakeSocket(body))
         resp.begin()
         self.assertRaises(client.LineTooLong, resp.read)
+
+    def test_early_eof(self):
+        # Test httpresponse with no \r\n termination,
+        body = "HTTP/1.1 200 Ok"
+        sock = FakeSocket(body)
+        resp = client.HTTPResponse(sock)
+        resp.begin()
+        self.assertEqual(resp.read(), b'')
+        self.assertTrue(resp.isclosed())
+        self.assertFalse(resp.closed)
+        resp.close()
+        self.assertTrue(resp.closed)
 
 class OfflineTest(TestCase):
     def test_responses(self):
@@ -420,7 +755,7 @@ class TimeoutTest(TestCase):
         # and into the socket.
 
         # default -- use global socket timeout
-        self.assertTrue(socket.getdefaulttimeout() is None)
+        self.assertIsNone(socket.getdefaulttimeout())
         socket.setdefaulttimeout(30)
         try:
             httpConn = client.HTTPConnection(HOST, TimeoutTest.PORT)
@@ -431,7 +766,7 @@ class TimeoutTest(TestCase):
         httpConn.close()
 
         # no timeout -- do not use global socket default
-        self.assertTrue(socket.getdefaulttimeout() is None)
+        self.assertIsNone(socket.getdefaulttimeout())
         socket.setdefaulttimeout(30)
         try:
             httpConn = client.HTTPConnection(HOST, TimeoutTest.PORT,
@@ -479,17 +814,18 @@ class HTTPSTest(TestCase):
             self._check_svn_python_org(resp)
 
     def test_networked_good_cert(self):
-        # We feed a CA cert that validates the server's cert
+        # We feed the server's cert as a validating cert
         import ssl
         support.requires('network')
-        with support.transient_internet('svn.python.org'):
+        with support.transient_internet('self-signed.pythontest.net'):
             context = ssl.SSLContext(ssl.PROTOCOL_TLSv1)
             context.verify_mode = ssl.CERT_REQUIRED
-            context.load_verify_locations(CACERT_svn_python_org)
-            h = client.HTTPSConnection('svn.python.org', 443, context=context)
+            context.load_verify_locations(CERT_selfsigned_pythontestdotnet)
+            h = client.HTTPSConnection('self-signed.pythontest.net', 443, context=context)
             h.request('GET', '/')
             resp = h.getresponse()
-            self._check_svn_python_org(resp)
+            server_string = resp.getheader('server')
+            self.assertIn('nginx', server_string)
 
     def test_networked_bad_cert(self):
         # We feed a "CA" cert that is unrelated to the server's cert
@@ -506,8 +842,7 @@ class HTTPSTest(TestCase):
     def test_local_good_hostname(self):
         # The (valid) cert validates the HTTP hostname
         import ssl
-        from test.ssl_servers import make_https_server
-        server = make_https_server(self, CERT_localhost)
+        server = self.make_server(CERT_localhost)
         context = ssl.SSLContext(ssl.PROTOCOL_TLSv1)
         context.verify_mode = ssl.CERT_REQUIRED
         context.load_verify_locations(CERT_localhost)
@@ -515,12 +850,12 @@ class HTTPSTest(TestCase):
         h.request('GET', '/nonexistent')
         resp = h.getresponse()
         self.assertEqual(resp.status, 404)
+        del server
 
     def test_local_bad_hostname(self):
         # The (valid) cert doesn't validate the HTTP hostname
         import ssl
-        from test.ssl_servers import make_https_server
-        server = make_https_server(self, CERT_fakehostname)
+        server = self.make_server(CERT_fakehostname)
         context = ssl.SSLContext(ssl.PROTOCOL_TLSv1)
         context.verify_mode = ssl.CERT_REQUIRED
         context.load_verify_locations(CERT_fakehostname)
@@ -538,6 +873,27 @@ class HTTPSTest(TestCase):
         h.request('GET', '/nonexistent')
         resp = h.getresponse()
         self.assertEqual(resp.status, 404)
+        del server
+
+    @unittest.skipIf(not hasattr(client, 'HTTPSConnection'),
+                     'http.client.HTTPSConnection not available')
+    def test_host_port(self):
+        # Check invalid host_port
+
+        for hp in ("www.python.org:abc", "user:password@www.python.org"):
+            self.assertRaises(client.InvalidURL, client.HTTPSConnection, hp)
+
+        for hp, h, p in (("[fe80::207:e9ff:fe9b]:8000",
+                          "fe80::207:e9ff:fe9b", 8000),
+                         ("www.python.org:443", "www.python.org", 443),
+                         ("www.python.org:", "www.python.org", 443),
+                         ("www.python.org", "www.python.org", 443),
+                         ("[fe80::207:e9ff:fe9b]", "fe80::207:e9ff:fe9b", 443),
+                         ("[fe80::207:e9ff:fe9b]:", "fe80::207:e9ff:fe9b",
+                             443)):
+            c = client.HTTPSConnection(hp)
+            self.assertEqual(h, c.host)
+            self.assertEqual(p, c.port)
 
 
 class RequestBodyTest(TestCase):
@@ -588,6 +944,7 @@ class RequestBodyTest(TestCase):
         self.assertEqual(b'body\xc1', f.read())
 
     def test_file_body(self):
+        self.addCleanup(support.unlink, support.TESTFN)
         with open(support.TESTFN, "w") as f:
             f.write("body")
         with open(support.TESTFN) as f:
@@ -599,6 +956,7 @@ class RequestBodyTest(TestCase):
             self.assertEqual(b'body', f.read())
 
     def test_binary_file_body(self):
+        self.addCleanup(support.unlink, support.TESTFN)
         with open(support.TESTFN, "wb") as f:
             f.write(b"body\xc1")
         with open(support.TESTFN, "rb") as f:

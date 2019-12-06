@@ -19,14 +19,18 @@
 #define THREAD_STACK_SIZE       0       /* use default stack size */
 #endif
 
-#if (defined(__APPLE__) || defined(__FreeBSD__)) && defined(THREAD_STACK_SIZE) && THREAD_STACK_SIZE == 0
-   /* The default stack size for new threads on OSX is small enough that
-    * we'll get hard crashes instead of 'maximum recursion depth exceeded'
-    * exceptions.
-    *
-    * The default stack size below is the minimal stack size where a
-    * simple recursive function doesn't cause a hard crash.
-    */
+/* The default stack size for new threads on OSX and BSD is small enough that
+ * we'll get hard crashes instead of 'maximum recursion depth exceeded'
+ * exceptions.
+ *
+ * The default stack sizes below are the empirically determined minimal stack
+ * sizes where a simple recursive function doesn't cause a hard crash.
+ */
+#if defined(__APPLE__) && defined(THREAD_STACK_SIZE) && THREAD_STACK_SIZE == 0
+#undef  THREAD_STACK_SIZE
+#define THREAD_STACK_SIZE       0x500000
+#endif
+#if defined(__FreeBSD__) && defined(THREAD_STACK_SIZE) && THREAD_STACK_SIZE == 0
 #undef  THREAD_STACK_SIZE
 #define THREAD_STACK_SIZE       0x400000
 #endif
@@ -144,7 +148,7 @@ typedef struct {
  * Initialization.
  */
 
-#ifdef _HAVE_BSDI
+#if defined(_HAVE_BSDI)
 static
 void _noop(void)
 {
@@ -166,6 +170,7 @@ static void
 PyThread__init_thread(void)
 {
 #if defined(_AIX) && defined(__GNUC__)
+    extern void pthread_init(void);
     pthread_init();
 #endif
 }
@@ -240,8 +245,7 @@ PyThread_start_new_thread(void (*func)(void *), void *arg)
    hosed" because:
      - It does not guarantee the promise that a non-zero integer is returned.
      - The cast to long is inherently unsafe.
-     - It is not clear that the 'volatile' (for AIX?) and ugly casting in the
-       latter return statement (for Alpha OSF/1) are any longer necessary.
+     - It is not clear that the 'volatile' (for AIX?) are any longer necessary.
 */
 long
 PyThread_get_thread_ident(void)
@@ -249,13 +253,8 @@ PyThread_get_thread_ident(void)
     volatile pthread_t threadid;
     if (!initialized)
         PyThread_init_thread();
-    /* Jump through some hoops for Alpha OSF/1 */
     threadid = pthread_self();
-#if SIZEOF_PTHREAD_T <= SIZEOF_LONG
     return (long) threadid;
-#else
-    return (long) *(long *) &threadid;
-#endif
 }
 
 void
@@ -305,6 +304,7 @@ PyThread_free_lock(PyThread_type_lock lock)
     sem_t *thelock = (sem_t *)lock;
     int status, error = 0;
 
+    (void) error; /* silence unused-but-set-variable warning */
     dprintf(("PyThread_free_lock(%p) called\n", lock));
 
     if (!thelock)
@@ -337,6 +337,7 @@ PyThread_acquire_lock_timed(PyThread_type_lock lock, PY_TIMEOUT_T microseconds,
     int status, error = 0;
     struct timespec ts;
 
+    (void) error; /* silence unused-but-set-variable warning */
     dprintf(("PyThread_acquire_lock_timed(%p, %lld, %d) called\n",
              lock, microseconds, intr_flag));
 
@@ -387,6 +388,7 @@ PyThread_release_lock(PyThread_type_lock lock)
     sem_t *thelock = (sem_t *)lock;
     int status, error = 0;
 
+    (void) error; /* silence unused-but-set-variable warning */
     dprintf(("PyThread_release_lock(%p) called\n", lock));
 
     status = sem_post(thelock);
@@ -443,13 +445,17 @@ PyThread_free_lock(PyThread_type_lock lock)
     pthread_lock *thelock = (pthread_lock *)lock;
     int status, error = 0;
 
+    (void) error; /* silence unused-but-set-variable warning */
     dprintf(("PyThread_free_lock(%p) called\n", lock));
+
+    /* some pthread-like implementations tie the mutex to the cond
+     * and must have the cond destroyed first.
+     */
+    status = pthread_cond_destroy( &thelock->lock_released );
+    CHECK_STATUS("pthread_cond_destroy");
 
     status = pthread_mutex_destroy( &thelock->mut );
     CHECK_STATUS("pthread_mutex_destroy");
-
-    status = pthread_cond_destroy( &thelock->lock_released );
-    CHECK_STATUS("pthread_cond_destroy");
 
     free((void *)thelock);
 }
@@ -526,6 +532,7 @@ PyThread_release_lock(PyThread_type_lock lock)
     pthread_lock *thelock = (pthread_lock *)lock;
     int status, error = 0;
 
+    (void) error; /* silence unused-but-set-variable warning */
     dprintf(("PyThread_release_lock(%p) called\n", lock));
 
     status = pthread_mutex_lock( &thelock->mut );
@@ -533,12 +540,12 @@ PyThread_release_lock(PyThread_type_lock lock)
 
     thelock->locked = 0;
 
-    status = pthread_mutex_unlock( &thelock->mut );
-    CHECK_STATUS("pthread_mutex_unlock[3]");
-
     /* wake up someone (anyone, if any) waiting on the lock */
     status = pthread_cond_signal( &thelock->lock_released );
     CHECK_STATUS("pthread_cond_signal");
+
+    status = pthread_mutex_unlock( &thelock->mut );
+    CHECK_STATUS("pthread_mutex_unlock[3]");
 }
 
 #endif /* USE_SEMAPHORES */

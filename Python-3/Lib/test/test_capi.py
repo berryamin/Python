@@ -1,8 +1,8 @@
 # Run the _testcapi module tests (tests for the Python/C API):  by defn,
 # these are all functions _testcapi exports whose name begins with 'test_'.
 
-from __future__ import with_statement
 import os
+import pickle
 import random
 import subprocess
 import sys
@@ -10,10 +10,15 @@ import time
 import unittest
 from test import support
 try:
+    import _posixsubprocess
+except ImportError:
+    _posixsubprocess = None
+try:
     import threading
 except ImportError:
     threading = None
-import _testcapi
+# Skip this test if the _testcapi module isn't available.
+_testcapi = support.import_module('_testcapi')
 
 
 def testfunction(self):
@@ -39,20 +44,71 @@ class CAPITest(unittest.TestCase):
 
     @unittest.skipUnless(threading, 'Threading required for this test.')
     def test_no_FatalError_infinite_loop(self):
-        p = subprocess.Popen([sys.executable, "-c",
-                              'import _testcapi;'
-                              '_testcapi.crash_no_current_thread()'],
-                             stdout=subprocess.PIPE,
-                             stderr=subprocess.PIPE)
+        with support.suppress_crash_popup():
+            p = subprocess.Popen([sys.executable, "-c",
+                                  'import _testcapi;'
+                                  '_testcapi.crash_no_current_thread()'],
+                                 stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE)
         (out, err) = p.communicate()
         self.assertEqual(out, b'')
         # This used to cause an infinite loop.
-        self.assertEqual(err.rstrip(),
+        self.assertTrue(err.rstrip().startswith(
                          b'Fatal Python error:'
-                         b' PyThreadState_Get: no current thread')
+                         b' PyThreadState_Get: no current thread'))
 
     def test_memoryview_from_NULL_pointer(self):
         self.assertRaises(ValueError, _testcapi.make_memoryview_from_NULL_pointer)
+
+    def test_exc_info(self):
+        raised_exception = ValueError("5")
+        new_exc = TypeError("TEST")
+        try:
+            raise raised_exception
+        except ValueError as e:
+            tb = e.__traceback__
+            orig_sys_exc_info = sys.exc_info()
+            orig_exc_info = _testcapi.set_exc_info(new_exc.__class__, new_exc, None)
+            new_sys_exc_info = sys.exc_info()
+            new_exc_info = _testcapi.set_exc_info(*orig_exc_info)
+            reset_sys_exc_info = sys.exc_info()
+
+            self.assertEqual(orig_exc_info[1], e)
+
+            self.assertSequenceEqual(orig_exc_info, (raised_exception.__class__, raised_exception, tb))
+            self.assertSequenceEqual(orig_sys_exc_info, orig_exc_info)
+            self.assertSequenceEqual(reset_sys_exc_info, orig_exc_info)
+            self.assertSequenceEqual(new_exc_info, (new_exc.__class__, new_exc, None))
+            self.assertSequenceEqual(new_sys_exc_info, new_exc_info)
+        else:
+            self.assertTrue(False)
+
+    @unittest.skipUnless(_posixsubprocess, '_posixsubprocess required for this test.')
+    def test_seq_bytes_to_charp_array(self):
+        # Issue #15732: crash in _PySequence_BytesToCharpArray()
+        class Z(object):
+            def __len__(self):
+                return 1
+        self.assertRaises(TypeError, _posixsubprocess.fork_exec,
+                          1,Z(),3,[1, 2],5,6,7,8,9,10,11,12,13,14,15,16,17)
+        # Issue #15736: overflow in _PySequence_BytesToCharpArray()
+        class Z(object):
+            def __len__(self):
+                return sys.maxsize
+            def __getitem__(self, i):
+                return b'x'
+        self.assertRaises(MemoryError, _posixsubprocess.fork_exec,
+                          1,Z(),3,[1, 2],5,6,7,8,9,10,11,12,13,14,15,16,17)
+
+    @unittest.skipUnless(_posixsubprocess, '_posixsubprocess required for this test.')
+    def test_subprocess_fork_exec(self):
+        class Z(object):
+            def __len__(self):
+                return 1
+
+        # Issue #15738: crash in subprocess_fork_exec()
+        self.assertRaises(TypeError, _posixsubprocess.fork_exec,
+                          Z(),[b'1'],3,[1, 2],5,6,7,8,9,10,11,12,13,14,15,16,17)
 
 @unittest.skipUnless(threading, 'Threading required for this test.')
 class TestPendingCalls(unittest.TestCase):
@@ -137,6 +193,21 @@ class TestPendingCalls(unittest.TestCase):
         self.pendingcalls_submit(l, n)
         self.pendingcalls_wait(l, n)
 
+    def test_subinterps(self):
+        import builtins
+        r, w = os.pipe()
+        code = """if 1:
+            import sys, builtins, pickle
+            with open({:d}, "wb") as f:
+                pickle.dump(id(sys.modules), f)
+                pickle.dump(id(builtins), f)
+            """.format(w)
+        with open(r, "rb") as f:
+            ret = _testcapi.run_in_subinterp(code)
+            self.assertEqual(ret, 0)
+            self.assertNotEqual(pickle.load(f), id(sys.modules))
+            self.assertNotEqual(pickle.load(f), id(builtins))
+
 # Bug #6012
 class Test6012(unittest.TestCase):
     def test(self):
@@ -174,43 +245,118 @@ class EmbeddingTest(unittest.TestCase):
         finally:
             os.chdir(oldcwd)
 
+class SkipitemTest(unittest.TestCase):
 
-def test_main():
-    support.run_unittest(CAPITest, TestPendingCalls, Test6012, EmbeddingTest)
+    def test_skipitem(self):
+        """
+        If this test failed, you probably added a new "format unit"
+        in Python/getargs.c, but neglected to update our poor friend
+        skipitem() in the same file.  (If so, shame on you!)
 
-    for name in dir(_testcapi):
-        if name.startswith('test_'):
-            test = getattr(_testcapi, name)
-            if support.verbose:
-                print("internal", name)
-            test()
+        With a few exceptions**, this function brute-force tests all
+        printable ASCII*** characters (32 to 126 inclusive) as format units,
+        checking to see that PyArg_ParseTupleAndKeywords() return consistent
+        errors both when the unit is attempted to be used and when it is
+        skipped.  If the format unit doesn't exist, we'll get one of two
+        specific error messages (one for used, one for skipped); if it does
+        exist we *won't* get that error--we'll get either no error or some
+        other error.  If we get the specific "does not exist" error for one
+        test and not for the other, there's a mismatch, and the test fails.
 
-    # some extra thread-state tests driven via _testcapi
-    def TestThreadState():
-        if support.verbose:
-            print("auto-thread-state")
+           ** Some format units have special funny semantics and it would
+              be difficult to accomodate them here.  Since these are all
+              well-established and properly skipped in skipitem() we can
+              get away with not testing them--this test is really intended
+              to catch *new* format units.
 
-        idents = []
+          *** Python C source files must be ASCII.  Therefore it's impossible
+              to have non-ASCII format units.
 
-        def callback():
-            idents.append(_thread.get_ident())
+        """
+        empty_tuple = ()
+        tuple_1 = (0,)
+        dict_b = {'b':1}
+        keywords = ["a", "b"]
 
-        _testcapi._test_thread_state(callback)
-        a = b = callback
-        time.sleep(1)
-        # Check our main thread is in the list exactly 3 times.
-        if idents.count(_thread.get_ident()) != 3:
-            raise support.TestFailed(
-                        "Couldn't find main thread correctly in the list")
+        for i in range(32, 127):
+            c = chr(i)
 
-    if threading:
-        import _thread
-        import time
-        TestThreadState()
-        t = threading.Thread(target=TestThreadState)
+            # skip parentheses, the error reporting is inconsistent about them
+            # skip 'e', it's always a two-character code
+            # skip '|' and '$', they don't represent arguments anyway
+            if c in '()e|$':
+                continue
+
+            # test the format unit when not skipped
+            format = c + "i"
+            try:
+                # (note: the format string must be bytes!)
+                _testcapi.parse_tuple_and_keywords(tuple_1, dict_b,
+                    format.encode("ascii"), keywords)
+                when_not_skipped = False
+            except TypeError as e:
+                s = "argument 1 must be impossible<bad format char>, not int"
+                when_not_skipped = (str(e) == s)
+            except RuntimeError as e:
+                when_not_skipped = False
+
+            # test the format unit when skipped
+            optional_format = "|" + format
+            try:
+                _testcapi.parse_tuple_and_keywords(empty_tuple, dict_b,
+                    optional_format.encode("ascii"), keywords)
+                when_skipped = False
+            except RuntimeError as e:
+                s = "impossible<bad format char>: '{}'".format(format)
+                when_skipped = (str(e) == s)
+
+            message = ("test_skipitem_parity: "
+                "detected mismatch between convertsimple and skipitem "
+                "for format unit '{}' ({}), not skipped {}, skipped {}".format(
+                    c, i, when_skipped, when_not_skipped))
+            self.assertIs(when_skipped, when_not_skipped, message)
+
+    def test_parse_tuple_and_keywords(self):
+        # parse_tuple_and_keywords error handling tests
+        self.assertRaises(TypeError, _testcapi.parse_tuple_and_keywords,
+                          (), {}, 42, [])
+        self.assertRaises(ValueError, _testcapi.parse_tuple_and_keywords,
+                          (), {}, b'', 42)
+        self.assertRaises(ValueError, _testcapi.parse_tuple_and_keywords,
+                          (), {}, b'', [''] * 42)
+        self.assertRaises(ValueError, _testcapi.parse_tuple_and_keywords,
+                          (), {}, b'', [42])
+
+@unittest.skipUnless(threading, 'Threading required for this test.')
+class TestThreadState(unittest.TestCase):
+
+    @support.reap_threads
+    def test_thread_state(self):
+        # some extra thread-state tests driven via _testcapi
+        def target():
+            idents = []
+
+            def callback():
+                idents.append(threading.get_ident())
+
+            _testcapi._test_thread_state(callback)
+            a = b = callback
+            time.sleep(1)
+            # Check our main thread is in the list exactly 3 times.
+            self.assertEqual(idents.count(threading.get_ident()), 3,
+                             "Couldn't find main thread correctly in the list")
+
+        target()
+        t = threading.Thread(target=target)
         t.start()
         t.join()
 
+class Test_testcapi(unittest.TestCase):
+    def test__testcapi(self):
+        for name in dir(_testcapi):
+            if name.startswith('test_'):
+                test = getattr(_testcapi, name)
+                test()
 
 if __name__ == "__main__":
-    test_main()
+    unittest.main()

@@ -48,6 +48,7 @@
 #include <assert.h>
 
 #include "pyport.h"
+#include "pymacro.h"
 
 #include "pyatomic.h"
 
@@ -100,7 +101,7 @@
 #include "warnings.h"
 #include "weakrefobject.h"
 #include "structseq.h"
-
+#include "namespaceobject.h"
 
 #include "codecs.h"
 #include "pyerrors.h"
@@ -126,58 +127,6 @@
 #include "pystrcmp.h"
 #include "dtoa.h"
 #include "fileutils.h"
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-/* _Py_Mangle is defined in compile.c */
-#ifndef Py_LIMITED_API
-PyAPI_FUNC(PyObject*) _Py_Mangle(PyObject *p, PyObject *name);
-#endif
-
-#ifdef __cplusplus
-}
-#endif
-
-/* Argument must be a char or an int in [-128, 127] or [0, 255]. */
-#define Py_CHARMASK(c)		((unsigned char)((c) & 0xff))
-
 #include "pyfpe.h"
-
-/* These definitions must match corresponding definitions in graminit.h.
-   There's code in compile.c that checks that they are the same. */
-#define Py_single_input 256
-#define Py_file_input 257
-#define Py_eval_input 258
-
-#ifdef HAVE_PTH
-/* GNU pth user-space thread support */
-#include <pth.h>
-#endif
-
-/* Define macros for inline documentation. */
-#define PyDoc_VAR(name) static char name[]
-#define PyDoc_STRVAR(name,str) PyDoc_VAR(name) = PyDoc_STR(str)
-#ifdef WITH_DOC_STRINGS
-#define PyDoc_STR(str) str
-#else
-#define PyDoc_STR(str) ""
-#endif
-
-#ifdef __QNXNTO__
-/* For each fopen() with valid descriptor
-   we force full buffer mode FBF with 16kb. man 'setvbuf' for more info.
-   You can override the build by setting SET_BUFFER_IO(fp) to nothing 
-   We have max 1024 FD descriptors and an idle PIM setup has around 125.
-   
-   MIN:   125 * 16kb =    2000k   <<< quick test shows roughly 123 FD's for PIM on idle.
-   50%:   512 * 16kb =    8192k   <<< If we hit 512 files open
-   MAX:  1023 * 16kb =   16368k   <<< if we hit 1023 files open 1024 is physical limit 
-*/
-
-#define SET_BUFFER_IO(fp) \
-        if(fp) setvbuf(fp,NULL,_IOFBF,16384)
-#endif
 
 #endif /* !Py_PYTHON_H */

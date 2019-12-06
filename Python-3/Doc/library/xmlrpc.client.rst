@@ -8,7 +8,7 @@
 
 
 .. XXX Not everything is documented yet.  It might be good to describe
-   Marshaller, Unmarshaller, getparser, dumps, loads, and Transport.
+   Marshaller, Unmarshaller, getparser and Transport.
 
 **Source code:** :source:`Lib/xmlrpc/client.py`
 
@@ -21,7 +21,24 @@ supports writing XML-RPC client code; it handles all the details of translating
 between conformable Python objects and XML on the wire.
 
 
-.. class:: ServerProxy(uri, transport=None, encoding=None, verbose=False, allow_none=False, use_datetime=False)
+.. warning::
+
+   The :mod:`xmlrpc.client` module is not secure against maliciously
+   constructed data.  If you need to parse untrusted or unauthenticated data see
+   :ref:`xml-vulnerabilities`.
+
+.. warning::
+
+   In the case of https URIs, :mod:`xmlrpc.client` does not do any verification
+   of the server's certificate.
+
+
+.. class:: ServerProxy(uri, transport=None, encoding=None, verbose=False, \
+                       allow_none=False, use_datetime=False, \
+                       use_builtin_types=False)
+
+   .. versionchanged:: 3.3
+      The *use_builtin_types* flag was added.
 
    A :class:`ServerProxy` instance is an object that manages communication with a
    remote XML-RPC server.  The required first argument is a URI (Uniform Resource
@@ -34,9 +51,13 @@ between conformable Python objects and XML on the wire.
    XML; the default behaviour is for ``None`` to raise a :exc:`TypeError`. This is
    a commonly-used extension to the XML-RPC specification, but isn't supported by
    all clients and servers; see http://ontosys.com/xml-rpc/extensions.php for a
-   description.  The *use_datetime* flag can be used to cause date/time values to
-   be presented as :class:`datetime.datetime` objects; this is false by default.
-   :class:`datetime.datetime` objects may be passed to calls.
+   description.  The *use_builtin_types* flag can be used to cause date/time values
+   to be presented as :class:`datetime.datetime` objects and binary data to be
+   presented as :class:`bytes` objects; this flag is false by default.
+   :class:`datetime.datetime` and :class:`bytes` objects may be passed to calls.
+
+   The obsolete *use_datetime* flag is similar to *use_builtin_types* but it
+   applies only to date/time values.
 
    Both the HTTP and HTTPS transports support the URL syntax extension for HTTP
    Basic Authentication: ``http://user:pass@host:port/path``.  The  ``user:pass``
@@ -55,6 +76,8 @@ between conformable Python objects and XML on the wire.
    arguments and return Python basic types and classes.  Types that are conformable
    (e.g. that can be marshalled through XML), include the following (and except
    where noted, they are unmarshalled as the same Python type):
+
+   .. tabularcolumns:: |l|L|
 
    +---------------------------------+---------------------------------------------+
    | Name                            | Meaning                                     |
@@ -78,12 +101,12 @@ between conformable Python objects and XML on the wire.
    |                                 | only their *__dict__* attribute is          |
    |                                 | transmitted.                                |
    +---------------------------------+---------------------------------------------+
-   | :const:`dates`                  | in seconds since the epoch (pass in an      |
-   |                                 | instance of the :class:`DateTime` class) or |
+   | :const:`dates`                  | In seconds since the epoch.  Pass in an     |
+   |                                 | instance of the :class:`DateTime` class or  |
    |                                 | a :class:`datetime.datetime` instance.      |
    +---------------------------------+---------------------------------------------+
-   | :const:`binary data`            | pass in an instance of the :class:`Binary`  |
-   |                                 | wrapper class                               |
+   | :const:`binary data`            | Pass in an instance of the :class:`Binary`  |
+   |                                 | wrapper class or a :class:`bytes` instance. |
    +---------------------------------+---------------------------------------------+
 
    This is the full set of data types supported by XML-RPC.  Method calls may also
@@ -98,8 +121,9 @@ between conformable Python objects and XML on the wire.
    ensure that the string is free of characters that aren't allowed in XML, such as
    the control characters with ASCII values between 0 and 31 (except, of course,
    tab, newline and carriage return); failing to do this will result in an XML-RPC
-   request that isn't well-formed XML.  If you have to pass arbitrary strings via
-   XML-RPC, use the :class:`Binary` wrapper class described below.
+   request that isn't well-formed XML.  If you have to pass arbitrary bytes
+   via XML-RPC, use the :class:`bytes` class or the class:`Binary` wrapper class
+   described below.
 
    :class:`Server` is retained as an alias for :class:`ServerProxy` for backwards
    compatibility.  New code should use :class:`ServerProxy`.
@@ -249,7 +273,7 @@ The client code for the preceding server::
 Binary Objects
 --------------
 
-This class may be initialized from string data (which may include NULs). The
+This class may be initialized from bytes data (which may include NULs). The
 primary access to the content of a :class:`Binary` object is provided by an
 attribute:
 
@@ -257,15 +281,15 @@ attribute:
 .. attribute:: Binary.data
 
    The binary data encapsulated by the :class:`Binary` instance.  The data is
-   provided as an 8-bit string.
+   provided as a :class:`bytes` object.
 
 :class:`Binary` objects have the following methods, supported mainly for
 internal use by the marshalling/unmarshalling code:
 
 
-.. method:: Binary.decode(string)
+.. method:: Binary.decode(bytes)
 
-   Accept a base64 string and decode it as the instance's new data.
+   Accept a base64 :class:`bytes` object and decode it as the instance's new data.
 
 
 .. method:: Binary.encode(out)
@@ -402,8 +426,8 @@ by providing an invalid URI::
 MultiCall Objects
 -----------------
 
-In http://www.xmlrpc.com/discuss/msgReader%241208, an approach is presented to
-encapsulate multiple calls to a remote server into a single request.
+The :class:`MultiCall` object provides a way to encapsulate multiple calls to a
+remote server into a single request [#]_.
 
 
 .. class:: MultiCall(server)
@@ -416,21 +440,21 @@ encapsulate multiple calls to a remote server into a single request.
    is a :term:`generator`; iterating over this generator yields the individual
    results.
 
-A usage example of this class follows.  The server code ::
+A usage example of this class follows.  The server code::
 
    from xmlrpc.server import SimpleXMLRPCServer
 
-   def add(x,y):
-       return x+y
+   def add(x, y):
+       return x + y
 
    def subtract(x, y):
-       return x-y
+       return x - y
 
    def multiply(x, y):
-       return x*y
+       return x * y
 
    def divide(x, y):
-       return x/y
+       return x // y
 
    # A simple server with simple arithmetic functions
    server = SimpleXMLRPCServer(("localhost", 8000))
@@ -448,13 +472,13 @@ The client code for the preceding server::
 
    proxy = xmlrpc.client.ServerProxy("http://localhost:8000/")
    multicall = xmlrpc.client.MultiCall(proxy)
-   multicall.add(7,3)
-   multicall.subtract(7,3)
-   multicall.multiply(7,3)
-   multicall.divide(7,3)
+   multicall.add(7, 3)
+   multicall.subtract(7, 3)
+   multicall.multiply(7, 3)
+   multicall.divide(7, 3)
    result = multicall()
 
-   print("7+3=%d, 7-3=%d, 7*3=%d, 7/3=%d" % tuple(result))
+   print("7+3=%d, 7-3=%d, 7*3=%d, 7//3=%d" % tuple(result))
 
 
 Convenience Functions
@@ -471,14 +495,21 @@ Convenience Functions
    it via an extension,  provide a true value for *allow_none*.
 
 
-.. function:: loads(data, use_datetime=False)
+.. function:: loads(data, use_datetime=False, use_builtin_types=False)
 
    Convert an XML-RPC request or response into Python objects, a ``(params,
    methodname)``.  *params* is a tuple of argument; *methodname* is a string, or
    ``None`` if no method name is present in the packet. If the XML-RPC packet
    represents a fault condition, this function will raise a :exc:`Fault` exception.
-   The *use_datetime* flag can be used to cause date/time values to be presented as
-   :class:`datetime.datetime` objects; this is false by default.
+   The *use_builtin_types* flag can be used to cause date/time values to be
+   presented as :class:`datetime.datetime` objects and binary data to be
+   presented as :class:`bytes` objects; this flag is false by default.
+
+   The obsolete *use_datetime* flag is similar to *use_builtin_types* but it
+   applies only to date/time values.
+
+   .. versionchanged:: 3.3
+      The *use_builtin_types* flag was added.
 
 
 .. _xmlrpc-client-example:
@@ -534,3 +565,10 @@ Example of Client and Server Usage
 See :ref:`simplexmlrpcserver-example`.
 
 
+.. rubric:: Footnotes
+
+.. [#] This approach has been first presented in `a discussion on xmlrpc.com
+   <http://web.archive.org/web/20060624230303/http://www.xmlrpc.com/discuss/msgReader$1208?mode=topic>`_.
+.. the link now points to webarchive since the one at
+.. http://www.xmlrpc.com/discuss/msgReader%241208 is broken (and webadmin
+.. doesn't reply)

@@ -13,6 +13,7 @@ dis(pickle, out=None, memo=None, indentlevel=4)
 import codecs
 import pickle
 import re
+import sys
 
 __all__ = ['dis', 'genops', 'optimize']
 
@@ -165,8 +166,9 @@ UP_TO_NEWLINE = -1
 
 # Represents the number of bytes consumed by a two-argument opcode where
 # the first argument gives the number of bytes in the second argument.
-TAKEN_FROM_ARGUMENT1 = -2   # num bytes is 1-byte unsigned int
-TAKEN_FROM_ARGUMENT4 = -3   # num bytes is 4-byte signed little-endian int
+TAKEN_FROM_ARGUMENT1  = -2   # num bytes is 1-byte unsigned int
+TAKEN_FROM_ARGUMENT4  = -3   # num bytes is 4-byte signed little-endian int
+TAKEN_FROM_ARGUMENT4U = -4   # num bytes is 4-byte unsigned little-endian int
 
 class ArgumentDescriptor(object):
     __slots__ = (
@@ -194,7 +196,8 @@ class ArgumentDescriptor(object):
         assert isinstance(n, int) and (n >= 0 or
                                        n in (UP_TO_NEWLINE,
                                              TAKEN_FROM_ARGUMENT1,
-                                             TAKEN_FROM_ARGUMENT4))
+                                             TAKEN_FROM_ARGUMENT4,
+                                             TAKEN_FROM_ARGUMENT4U))
         self.n = n
 
         self.reader = reader
@@ -263,6 +266,27 @@ int4 = ArgumentDescriptor(
            n=4,
            reader=read_int4,
            doc="Four-byte signed integer, little-endian, 2's complement.")
+
+
+def read_uint4(f):
+    r"""
+    >>> import io
+    >>> read_uint4(io.BytesIO(b'\xff\x00\x00\x00'))
+    255
+    >>> read_uint4(io.BytesIO(b'\x00\x00\x00\x80')) == 2**31
+    True
+    """
+
+    data = f.read(4)
+    if len(data) == 4:
+        return _unpack("<I", data)[0]
+    raise ValueError("not enough data in stream to read uint4")
+
+uint4 = ArgumentDescriptor(
+            name='uint4',
+            n=4,
+            reader=read_uint4,
+            doc="Four-byte unsigned integer, little-endian.")
 
 
 def read_stringnl(f, decode=True, stripquotes=True):
@@ -421,6 +445,67 @@ string1 = ArgumentDescriptor(
               """)
 
 
+def read_bytes1(f):
+    r"""
+    >>> import io
+    >>> read_bytes1(io.BytesIO(b"\x00"))
+    b''
+    >>> read_bytes1(io.BytesIO(b"\x03abcdef"))
+    b'abc'
+    """
+
+    n = read_uint1(f)
+    assert n >= 0
+    data = f.read(n)
+    if len(data) == n:
+        return data
+    raise ValueError("expected %d bytes in a bytes1, but only %d remain" %
+                     (n, len(data)))
+
+bytes1 = ArgumentDescriptor(
+              name="bytes1",
+              n=TAKEN_FROM_ARGUMENT1,
+              reader=read_bytes1,
+              doc="""A counted bytes string.
+
+              The first argument is a 1-byte unsigned int giving the number
+              of bytes, and the second argument is that many bytes.
+              """)
+
+
+def read_bytes4(f):
+    r"""
+    >>> import io
+    >>> read_bytes4(io.BytesIO(b"\x00\x00\x00\x00abc"))
+    b''
+    >>> read_bytes4(io.BytesIO(b"\x03\x00\x00\x00abcdef"))
+    b'abc'
+    >>> read_bytes4(io.BytesIO(b"\x00\x00\x00\x03abcdef"))
+    Traceback (most recent call last):
+    ...
+    ValueError: expected 50331648 bytes in a bytes4, but only 6 remain
+    """
+
+    n = read_uint4(f)
+    if n > sys.maxsize:
+        raise ValueError("bytes4 byte count > sys.maxsize: %d" % n)
+    data = f.read(n)
+    if len(data) == n:
+        return data
+    raise ValueError("expected %d bytes in a bytes4, but only %d remain" %
+                     (n, len(data)))
+
+bytes4 = ArgumentDescriptor(
+              name="bytes4",
+              n=TAKEN_FROM_ARGUMENT4U,
+              reader=read_bytes4,
+              doc="""A counted bytes string.
+
+              The first argument is a 4-byte little-endian unsigned int giving
+              the number of bytes, and the second argument is that many bytes.
+              """)
+
+
 def read_unicodestringnl(f):
     r"""
     >>> import io
@@ -464,9 +549,9 @@ def read_unicodestring4(f):
     ValueError: expected 7 bytes in a unicodestring4, but only 6 remain
     """
 
-    n = read_int4(f)
-    if n < 0:
-        raise ValueError("unicodestring4 byte count < 0: %d" % n)
+    n = read_uint4(f)
+    if n > sys.maxsize:
+        raise ValueError("unicodestring4 byte count > sys.maxsize: %d" % n)
     data = f.read(n)
     if len(data) == n:
         return str(data, 'utf-8', 'surrogatepass')
@@ -475,7 +560,7 @@ def read_unicodestring4(f):
 
 unicodestring4 = ArgumentDescriptor(
                     name="unicodestring4",
-                    n=TAKEN_FROM_ARGUMENT4,
+                    n=TAKEN_FROM_ARGUMENT4U,
                     reader=read_unicodestring4,
                     doc="""A counted Unicode string.
 
@@ -495,25 +580,18 @@ def read_decimalnl_short(f):
     >>> read_decimalnl_short(io.BytesIO(b"1234L\n56"))
     Traceback (most recent call last):
     ...
-    ValueError: trailing 'L' not allowed in b'1234L'
+    ValueError: invalid literal for int() with base 10: b'1234L'
     """
 
     s = read_stringnl(f, decode=False, stripquotes=False)
-    if s.endswith(b"L"):
-        raise ValueError("trailing 'L' not allowed in %r" % s)
 
-    # It's not necessarily true that the result fits in a Python short int:
-    # the pickle may have been written on a 64-bit box.  There's also a hack
-    # for True and False here.
+    # There's a hack for True and False here.
     if s == b"00":
         return False
     elif s == b"01":
         return True
 
-    try:
-        return int(s)
-    except OverflowError:
-        return int(s)
+    return int(s)
 
 def read_decimalnl_long(f):
     r"""
@@ -806,7 +884,7 @@ stackslice = StackObject(
                  obtype=StackObject,
                  doc="""An object representing a contiguous slice of the stack.
 
-                 This is used in conjuction with markobject, to represent all
+                 This is used in conjunction with markobject, to represent all
                  of the stack following the topmost markobject.  For example,
                  the POP_MARK opcode changes the stack from
 
@@ -875,7 +953,7 @@ class OpcodeInfo(object):
             assert isinstance(x, StackObject)
         self.stack_after = stack_after
 
-        assert isinstance(proto, int) and 0 <= proto <= 3
+        assert isinstance(proto, int) and 0 <= proto <= pickle.HIGHEST_PROTOCOL
         self.proto = proto
 
         assert isinstance(doc, str)
@@ -1041,28 +1119,28 @@ opcodes = [
 
     I(name='BINBYTES',
       code='B',
-      arg=string4,
+      arg=bytes4,
       stack_before=[],
       stack_after=[pybytes],
       proto=3,
       doc="""Push a Python bytes object.
 
-      There are two arguments:  the first is a 4-byte little-endian signed int
-      giving the number of bytes in the string, and the second is that many
-      bytes, which are taken literally as the bytes content.
+      There are two arguments:  the first is a 4-byte little-endian unsigned int
+      giving the number of bytes, and the second is that many bytes, which are
+      taken literally as the bytes content.
       """),
 
     I(name='SHORT_BINBYTES',
       code='C',
-      arg=string1,
+      arg=bytes1,
       stack_before=[],
       stack_after=[pybytes],
       proto=3,
-      doc="""Push a Python string object.
+      doc="""Push a Python bytes object.
 
       There are two arguments:  the first is a 1-byte unsigned int giving
-      the number of bytes in the string, and the second is that many bytes,
-      which are taken literally as the string content.
+      the number of bytes, and the second is that many bytes, which are taken
+      literally as the string content.
       """),
 
     # Ways to spell None.
@@ -1121,7 +1199,7 @@ opcodes = [
       proto=1,
       doc="""Push a Python Unicode string object.
 
-      There are two arguments:  the first is a 4-byte little-endian signed int
+      There are two arguments:  the first is a 4-byte little-endian unsigned int
       giving the number of bytes in the string.  The second is that many
       bytes, and is the UTF-8 encoding of the Unicode string.
       """),
@@ -1425,13 +1503,13 @@ opcodes = [
 
     I(name='LONG_BINGET',
       code='j',
-      arg=int4,
+      arg=uint4,
       stack_before=[],
       stack_after=[anyobject],
       proto=1,
       doc="""Read an object from the memo and push it on the stack.
 
-      The index of the memo object to push is given by the 4-byte signed
+      The index of the memo object to push is given by the 4-byte unsigned
       little-endian integer following.
       """),
 
@@ -1462,14 +1540,14 @@ opcodes = [
 
     I(name='LONG_BINPUT',
       code='r',
-      arg=int4,
+      arg=uint4,
       stack_before=[],
       stack_after=[],
       proto=1,
       doc="""Store the stack top into the memo.  The stack is not popped.
 
       The index of the memo location to write into is given by the 4-byte
-      signed little-endian integer following.
+      unsigned little-endian integer following.
       """),
 
     # Access the extension registry (predefined objects).  Akin to the GET
@@ -1642,6 +1720,8 @@ opcodes = [
       is pushed on the stack.
 
       NOTE:  checks for __safe_for_unpickling__ went away in Python 2.3.
+      NOTE:  the distinction between old-style and new-style classes does
+             not make sense in Python 3.
       """),
 
     I(name='OBJ',
@@ -1954,12 +2034,12 @@ def dis(pickle, out=None, memo=None, indentlevel=4, annotate=0):
 
     stack = []          # crude emulation of unpickler stack
     if memo is None:
-        memo = {}       # crude emulation of unpicker memo
+        memo = {}       # crude emulation of unpickler memo
     maxproto = -1       # max protocol number seen
     markstack = []      # bytecode positions of MARK opcodes
     indentchunk = ' ' * indentlevel
     errormsg = None
-    annocol = annotate  # columnt hint for annotations
+    annocol = annotate  # column hint for annotations
     for opcode, arg, pos in genops(pickle):
         if pos is not None:
             print("%5d:" % pos, end=' ', file=out)
@@ -2083,27 +2163,22 @@ _dis_test = r"""
    29: (    MARK
    30: d        DICT       (MARK at 29)
    31: p    PUT        2
-   34: c    GLOBAL     '__builtin__ bytes'
-   53: p    PUT        3
-   56: (    MARK
-   57: (        MARK
-   58: l            LIST       (MARK at 57)
+   34: c    GLOBAL     '_codecs encode'
+   50: p    PUT        3
+   53: (    MARK
+   54: V        UNICODE    'abc'
    59: p        PUT        4
-   62: L        LONG       97
-   67: a        APPEND
-   68: L        LONG       98
-   73: a        APPEND
-   74: L        LONG       99
-   79: a        APPEND
-   80: t        TUPLE      (MARK at 56)
-   81: p    PUT        5
-   84: R    REDUCE
-   85: p    PUT        6
-   88: V    UNICODE    'def'
-   93: p    PUT        7
-   96: s    SETITEM
-   97: a    APPEND
-   98: .    STOP
+   62: V        UNICODE    'latin1'
+   70: p        PUT        5
+   73: t        TUPLE      (MARK at 53)
+   74: p    PUT        6
+   77: R    REDUCE
+   78: p    PUT        7
+   81: V    UNICODE    'def'
+   86: p    PUT        8
+   89: s    SETITEM
+   90: a    APPEND
+   91: .    STOP
 highest protocol among opcodes = 0
 
 Try again with a "binary" pickle.
@@ -2122,25 +2197,22 @@ Try again with a "binary" pickle.
    14: q        BINPUT     1
    16: }        EMPTY_DICT
    17: q        BINPUT     2
-   19: c        GLOBAL     '__builtin__ bytes'
-   38: q        BINPUT     3
-   40: (        MARK
-   41: ]            EMPTY_LIST
-   42: q            BINPUT     4
-   44: (            MARK
-   45: K                BININT1    97
-   47: K                BININT1    98
-   49: K                BININT1    99
-   51: e                APPENDS    (MARK at 44)
-   52: t            TUPLE      (MARK at 40)
-   53: q        BINPUT     5
-   55: R        REDUCE
-   56: q        BINPUT     6
-   58: X        BINUNICODE 'def'
-   66: q        BINPUT     7
-   68: s        SETITEM
-   69: e        APPENDS    (MARK at 3)
-   70: .    STOP
+   19: c        GLOBAL     '_codecs encode'
+   35: q        BINPUT     3
+   37: (        MARK
+   38: X            BINUNICODE 'abc'
+   46: q            BINPUT     4
+   48: X            BINUNICODE 'latin1'
+   59: q            BINPUT     5
+   61: t            TUPLE      (MARK at 37)
+   62: q        BINPUT     6
+   64: R        REDUCE
+   65: q        BINPUT     7
+   67: X        BINUNICODE 'def'
+   75: q        BINPUT     8
+   77: s        SETITEM
+   78: e        APPENDS    (MARK at 3)
+   79: .    STOP
 highest protocol among opcodes = 1
 
 Exercise the INST/OBJ/BUILD family.

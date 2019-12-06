@@ -2,7 +2,7 @@
 '''
 Small wsgiref based web server. Takes a path to serve from and an
 optional port number (defaults to 8000), then tries to serve files.
-Mime types are guessed from the file names, 404 errors are thrown
+Mime types are guessed from the file names, 404 errors are raised
 if the file is not found. Used for the make serve target in Doc.
 '''
 import sys
@@ -22,7 +22,7 @@ def app(environ, respond):
         return util.FileWrapper(open(fn, "rb"))
     else:
         respond('404 Not Found', [('Content-Type', 'text/plain')])
-        return ['not found']
+        return [b'not found']
 
 if __name__ == '__main__':
     path = sys.argv[1]

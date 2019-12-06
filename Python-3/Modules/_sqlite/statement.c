@@ -26,6 +26,7 @@
 #include "connection.h"
 #include "microprotocols.h"
 #include "prepare_protocol.h"
+#include "util.h"
 #include "sqlitecompat.h"
 
 /* prototypes */
@@ -87,10 +88,9 @@ int pysqlite_statement_create(pysqlite_Statement* self, pysqlite_Connection* con
     return rc;
 }
 
-int pysqlite_statement_bind_parameter(pysqlite_Statement* self, int pos, PyObject* parameter, int allow_8bit_chars)
+int pysqlite_statement_bind_parameter(pysqlite_Statement* self, int pos, PyObject* parameter)
 {
     int rc = SQLITE_OK;
-    PY_LONG_LONG longlongval;
     const char* buffer;
     char* string;
     Py_ssize_t buflen;
@@ -120,18 +120,21 @@ int pysqlite_statement_bind_parameter(pysqlite_Statement* self, int pos, PyObjec
     }
 
     switch (paramtype) {
-        case TYPE_LONG:
-            /* in the overflow error case, longval/longlongval is -1, and an exception is set */
-            longlongval = PyLong_AsLongLong(parameter);
-            rc = sqlite3_bind_int64(self->st, pos, (sqlite_int64)longlongval);
+        case TYPE_LONG: {
+            sqlite_int64 value = _pysqlite_long_as_int64(parameter);
+            if (value == -1 && PyErr_Occurred())
+                rc = -1;
+            else
+                rc = sqlite3_bind_int64(self->st, pos, value);
             break;
+        }
         case TYPE_FLOAT:
             rc = sqlite3_bind_double(self->st, pos, PyFloat_AsDouble(parameter));
             break;
         case TYPE_UNICODE:
-            string = _PyUnicode_AsString(parameter);
+            string = _PyUnicode_AsStringAndSize(parameter, &buflen);
             if (string != NULL)
-                rc = sqlite3_bind_text(self->st, pos, string, -1, SQLITE_TRANSIENT);
+                rc = sqlite3_bind_text(self->st, pos, string, buflen, SQLITE_TRANSIENT);
             else
                 rc = -1;
             break;
@@ -166,7 +169,7 @@ static int _need_adapt(PyObject* obj)
     }
 }
 
-void pysqlite_statement_bind_parameters(pysqlite_Statement* self, PyObject* parameters, int allow_8bit_chars)
+void pysqlite_statement_bind_parameters(pysqlite_Statement* self, PyObject* parameters)
 {
     PyObject* current_param;
     PyObject* adapted;
@@ -220,7 +223,7 @@ void pysqlite_statement_bind_parameters(pysqlite_Statement* self, PyObject* para
                 }
             }
 
-            rc = pysqlite_statement_bind_parameter(self, i + 1, adapted, allow_8bit_chars);
+            rc = pysqlite_statement_bind_parameter(self, i + 1, adapted);
             Py_DECREF(adapted);
 
             if (rc != SQLITE_OK) {
@@ -265,7 +268,7 @@ void pysqlite_statement_bind_parameters(pysqlite_Statement* self, PyObject* para
                 }
             }
 
-            rc = pysqlite_statement_bind_parameter(self, i, adapted, allow_8bit_chars);
+            rc = pysqlite_statement_bind_parameter(self, i, adapted);
             Py_DECREF(adapted);
 
             if (rc != SQLITE_OK) {
@@ -369,11 +372,9 @@ void pysqlite_statement_mark_dirty(pysqlite_Statement* self)
 
 void pysqlite_statement_dealloc(pysqlite_Statement* self)
 {
-    int rc;
-
     if (self->st) {
         Py_BEGIN_ALLOW_THREADS
-        rc = sqlite3_finalize(self->st);
+        sqlite3_finalize(self->st);
         Py_END_ALLOW_THREADS
     }
 

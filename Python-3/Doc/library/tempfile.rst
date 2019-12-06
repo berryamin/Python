@@ -25,7 +25,7 @@ instead a string of six random characters is used.
 
 Also, all the user-callable functions now take additional arguments which
 allow direct control over the location and name of temporary files.  It is
-no longer necessary to use the global *tempdir* and *template* variables.
+no longer necessary to use the global *tempdir* variable.
 To maintain backward compatibility, the argument order is somewhat odd; it
 is recommended to use keyword arguments for clarity.
 
@@ -82,9 +82,14 @@ The module defines the following user-callable items:
    causes the file to roll over to an on-disk file regardless of its size.
 
    The returned object is a file-like object whose :attr:`_file` attribute
-   is either a :class:`StringIO` object or a true file object, depending on
-   whether :func:`rollover` has been called. This file-like object can be
-   used in a :keyword:`with` statement, just like a normal file.
+   is either a :class:`io.BytesIO` or :class:`io.StringIO` object (depending on
+   whether binary or text *mode* was specified) or a true file
+   object, depending on whether :func:`rollover` has been called.  This
+   file-like object can be used in a :keyword:`with` statement, just like
+   a normal file.
+
+   .. versionchanged:: 3.3
+      the truncate method now accepts a ``size`` argument.
 
 
 .. function:: TemporaryDirectory(suffix='', prefix='tmp', dir=None)
@@ -92,12 +97,14 @@ The module defines the following user-callable items:
    This function creates a temporary directory using :func:`mkdtemp`
    (the supplied arguments are passed directly to the underlying function).
    The resulting object can be used as a context manager (see
-   :ref:`context-managers`).  On completion of the context (or destruction
-   of the temporary directory object), the newly created temporary directory
+   :ref:`context-managers`).  On completion of the context or destruction
+   of the temporary directory object the newly created temporary directory
    and all its contents are removed from the filesystem.
 
-   The directory name can be retrieved from the :attr:`name` attribute
-   of the returned object.
+   The directory name can be retrieved from the :attr:`name` attribute of the
+   returned object.  When the returned object is used as a context manager, the
+   :attr:`name` will be assigned to the target of the :keyword:`as` clause in
+   the :keyword:`with` statement, if there is one.
 
    The directory can be explicitly cleaned up by calling the
    :func:`cleanup` method.
@@ -176,11 +183,10 @@ The module defines the following user-callable items:
       ``delete=False`` parameter::
 
          >>> f = NamedTemporaryFile(delete=False)
-         >>> f
-         <open file '<fdopen>', mode 'w+b' at 0x384698>
          >>> f.name
-         '/var/folders/5q/5qTPn6xq2RaWqk+1Ytw3-U+++TI/-Tmp-/tmpG7V1Y0'
-         >>> f.write("Hello World!\n")
+         '/tmp/tmptjujjt'
+         >>> f.write(b"Hello World!\n")
+         13
          >>> f.close()
          >>> os.unlink(f.name)
          >>> os.path.exists(f.name)

@@ -44,6 +44,11 @@ _modules = {}
 
 error = (error, IOError)
 
+try:
+    from dbm import ndbm
+except ImportError:
+    ndbm = None
+
 
 def open(file, flag='r', mode=0o666):
     """Open or create database at path given by *file*.
@@ -166,7 +171,7 @@ def whichdb(filename):
         return ""
 
     # Check for GNU dbm
-    if magic == 0x13579ace:
+    if magic in (0x13579ace, 0x13579acd, 0x13579acf):
         return "dbm.gnu"
 
     # Later versions of Berkeley db hash file have a 12-byte pad in

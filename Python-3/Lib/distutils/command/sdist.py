@@ -175,7 +175,7 @@ class sdist(Command):
         depends on the user's options.
         """
         # new behavior when using a template:
-        # the file list is recalculated everytime because
+        # the file list is recalculated every time because
         # even if MANIFEST.in or setup.py are not changed
         # the user might have added some files in the tree that
         # need to be included.
@@ -306,7 +306,10 @@ class sdist(Command):
 
                 try:
                     self.filelist.process_template_line(line)
-                except DistutilsTemplateError as msg:
+                # the call above can raise a DistutilsTemplateError for
+                # malformed lines, or a ValueError from the lower-level
+                # convert_path function
+                except (DistutilsTemplateError, ValueError) as msg:
                     self.warn("%s, line %d: %s" % (template.filename,
                                                    template.current_line,
                                                    msg))

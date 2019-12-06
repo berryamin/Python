@@ -17,6 +17,11 @@ path names. Vice versa, using bytes objects cannot represent all file
 names on Windows (in the standard ``mbcs`` encoding), hence Windows
 applications should use string objects to access all files.
 
+Unlike a unix shell, Python does not do any *automatic* path expansions.
+Functions such as :func:`expanduser` and :func:`expandvars` can be invoked
+explicitly when an application desires shell-like path expansion.  (See also
+the :mod:`glob` module.)
+
 .. note::
 
    All of these functions accept either only bytes or only string objects as
@@ -43,13 +48,15 @@ applications should use string objects to access all files.
 .. function:: abspath(path)
 
    Return a normalized absolutized version of the pathname *path*. On most
-   platforms, this is equivalent to ``normpath(join(os.getcwd(), path))``.
+   platforms, this is equivalent to calling the function :func:`normpath` as
+   follows: ``normpath(join(os.getcwd(), path))``.
 
 
 .. function:: basename(path)
 
-   Return the base name of pathname *path*.  This is the second half of the pair
-   returned by ``split(path)``.  Note that the result of this function is different
+   Return the base name of pathname *path*.  This is the second element of the
+   pair returned by passing *path* to the function :func:`split`.  Note that
+   the result of this function is different
    from the Unix :program:`basename` program; where :program:`basename` for
    ``'/foo/bar/'`` returns ``'bar'``, the :func:`basename` function returns an
    empty string (``''``).
@@ -64,16 +71,21 @@ applications should use string objects to access all files.
 
 .. function:: dirname(path)
 
-   Return the directory name of pathname *path*.  This is the first half of the
-   pair returned by ``split(path)``.
+   Return the directory name of pathname *path*.  This is the first element of
+   the pair returned by passing *path* to the function :func:`split`.
 
 
 .. function:: exists(path)
 
-   Return ``True`` if *path* refers to an existing path.  Returns ``False`` for
-   broken symbolic links. On some platforms, this function may return ``False`` if
-   permission is not granted to execute :func:`os.stat` on the requested file, even
+   Return ``True`` if *path* refers to an existing path or an open
+   file descriptor.  Returns ``False`` for broken symbolic links.  On
+   some platforms, this function may return ``False`` if permission is
+   not granted to execute :func:`os.stat` on the requested file, even
    if the *path* physically exists.
+
+   .. versionchanged:: 3.3
+      *path* can now be an integer: ``True`` is returned if it is an
+       open file descriptor, ``False`` otherwise.
 
 
 .. function:: lexists(path)
@@ -119,9 +131,9 @@ applications should use string objects to access all files.
 
    Return the time of last access of *path*.  The return value is a number giving
    the number of seconds since the epoch (see the  :mod:`time` module).  Raise
-   :exc:`os.error` if the file does not exist or is inaccessible.
+   :exc:`OSError` if the file does not exist or is inaccessible.
 
-   If :func:`os.stat_float_times` returns True, the result is a floating point
+   If :func:`os.stat_float_times` returns ``True``, the result is a floating point
    number.
 
 
@@ -129,24 +141,24 @@ applications should use string objects to access all files.
 
    Return the time of last modification of *path*.  The return value is a number
    giving the number of seconds since the epoch (see the  :mod:`time` module).
-   Raise :exc:`os.error` if the file does not exist or is inaccessible.
+   Raise :exc:`OSError` if the file does not exist or is inaccessible.
 
-   If :func:`os.stat_float_times` returns True, the result is a floating point
+   If :func:`os.stat_float_times` returns ``True``, the result is a floating point
    number.
 
 
 .. function:: getctime(path)
 
    Return the system's ctime which, on some systems (like Unix) is the time of the
-   last change, and, on others (like Windows), is the creation time for *path*.
+   last metadata change, and, on others (like Windows), is the creation time for *path*.
    The return value is a number giving the number of seconds since the epoch (see
-   the  :mod:`time` module).  Raise :exc:`os.error` if the file does not exist or
+   the  :mod:`time` module).  Raise :exc:`OSError` if the file does not exist or
    is inaccessible.
 
 
 .. function:: getsize(path)
 
-   Return the size, in bytes, of *path*.  Raise :exc:`os.error` if the file does
+   Return the size, in bytes, of *path*.  Raise :exc:`OSError` if the file does
    not exist or is inaccessible.
 
 
@@ -207,13 +219,11 @@ applications should use string objects to access all files.
 
 .. function:: normpath(path)
 
-   Normalize a pathname.  This collapses redundant separators and up-level
-   references so that ``A//B``, ``A/B/``, ``A/./B`` and ``A/foo/../B`` all become
-   ``A/B``.
-
-   It does not normalize the case (use :func:`normcase` for that).  On Windows, it
-   converts forward slashes to backward slashes. It should be understood that this
-   may change the meaning of the path if it contains symbolic links!
+   Normalize a pathname by collapsing redundant separators and up-level
+   references so that ``A//B``, ``A/B/``, ``A/./B`` and ``A/foo/../B`` all
+   become ``A/B``.  This string manipulation may change the meaning of a path
+   that contains symbolic links.  On Windows, it converts forward slashes to
+   backward slashes. To normalize case, use :func:`normcase`.
 
 
 .. function:: realpath(path)
@@ -224,8 +234,10 @@ applications should use string objects to access all files.
 
 .. function:: relpath(path, start=None)
 
-   Return a relative filepath to *path* either from the current directory or from
-   an optional *start* point.
+   Return a relative filepath to *path* either from the current directory or
+   from an optional *start* directory.  This is a path computation:  the
+   filesystem is not accessed to confirm the existence or nature of *path* or
+   *start*.
 
    *start* defaults to :attr:`os.curdir`.
 
@@ -254,15 +266,16 @@ applications should use string objects to access all files.
 
    Availability: Unix, Windows.
 
-   .. versionchanged:: 3.2 Added Windows support.
+   .. versionchanged:: 3.2
+      Added Windows support.
 
 
 .. function:: samestat(stat1, stat2)
 
    Return ``True`` if the stat tuples *stat1* and *stat2* refer to the same file.
-   These structures may have been returned by :func:`fstat`, :func:`lstat`, or
-   :func:`stat`.  This function implements the underlying comparison used by
-   :func:`samefile` and :func:`sameopenfile`.
+   These structures may have been returned by :func:`os.fstat`,
+   :func:`os.lstat`, or :func:`os.stat`.  This function implements the
+   underlying comparison used by :func:`samefile` and :func:`sameopenfile`.
 
    Availability: Unix.
 
@@ -276,7 +289,8 @@ applications should use string objects to access all files.
    *path* is empty, both *head* and *tail* are empty.  Trailing slashes are
    stripped from *head* unless it is the root (one or more slashes only).  In
    all cases, ``join(head, tail)`` returns a path to the same location as *path*
-   (but the strings may differ).
+   (but the strings may differ).  Also see the functions :func:`dirname` and
+   :func:`basename`.
 
 
 .. function:: splitdrive(path)
@@ -320,5 +334,5 @@ applications should use string objects to access all files.
 
 .. data:: supports_unicode_filenames
 
-   True if arbitrary Unicode strings can be used as file names (within limitations
+   ``True`` if arbitrary Unicode strings can be used as file names (within limitations
    imposed by the file system).

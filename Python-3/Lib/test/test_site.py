@@ -5,26 +5,28 @@ executing have not been removed.
 
 """
 import unittest
-from test.support import run_unittest, TESTFN, EnvironmentVarGuard
-from test.support import captured_stderr
+import test.support
+from test.support import captured_stderr, TESTFN, EnvironmentVarGuard
 import builtins
 import os
 import sys
 import re
 import encodings
+import urllib.request
+import urllib.error
 import subprocess
 import sysconfig
 from copy import copy
 
-# Need to make sure to not import 'site' if someone specified ``-S`` at the
-# command-line.  Detect this by just making sure 'site' has not been imported
-# already.
-if "site" in sys.modules:
-    import site
-else:
-    raise unittest.SkipTest("importation of site.py suppressed")
+# These tests are not particularly useful if Python was invoked with -S.
+# If you add tests that are useful under -S, this skip should be moved
+# to the class level.
+if sys.flags.no_site:
+    raise unittest.SkipTest("Python was invoked with -S")
 
-if not os.path.isdir(site.USER_SITE):
+import site
+
+if site.ENABLE_USER_SITE and not os.path.isdir(site.USER_SITE):
     # need to add user site directory for tests
     os.makedirs(site.USER_SITE)
     site.addsitedir(site.USER_SITE)
@@ -39,6 +41,7 @@ class HelperFunctionsTests(unittest.TestCase):
         self.old_base = site.USER_BASE
         self.old_site = site.USER_SITE
         self.old_prefixes = site.PREFIXES
+        self.original_vars = sysconfig._CONFIG_VARS
         self.old_vars = copy(sysconfig._CONFIG_VARS)
 
     def tearDown(self):
@@ -47,7 +50,9 @@ class HelperFunctionsTests(unittest.TestCase):
         site.USER_BASE = self.old_base
         site.USER_SITE = self.old_site
         site.PREFIXES = self.old_prefixes
-        sysconfig._CONFIG_VARS = self.old_vars
+        sysconfig._CONFIG_VARS = self.original_vars
+        sysconfig._CONFIG_VARS.clear()
+        sysconfig._CONFIG_VARS.update(self.old_vars)
 
     def test_makepath(self):
         # Test makepath() have an absolute path for its first return value
@@ -157,6 +162,8 @@ class HelperFunctionsTests(unittest.TestCase):
         finally:
             pth_file.cleanup()
 
+    @unittest.skipUnless(site.ENABLE_USER_SITE, "requires access to PEP 370 "
+                          "user-site (site.ENABLE_USER_SITE)")
     def test_s_option(self):
         usersite = site.USER_SITE
         self.assertIn(usersite, sys.path)
@@ -171,14 +178,20 @@ class HelperFunctionsTests(unittest.TestCase):
         rc = subprocess.call([sys.executable, '-s', '-c',
             'import sys; sys.exit(%r in sys.path)' % usersite],
             env=env)
-        self.assertEqual(rc, 0)
+        if usersite == site.getsitepackages()[0]:
+            self.assertEqual(rc, 1)
+        else:
+            self.assertEqual(rc, 0)
 
         env = os.environ.copy()
         env["PYTHONNOUSERSITE"] = "1"
         rc = subprocess.call([sys.executable, '-c',
             'import sys; sys.exit(%r in sys.path)' % usersite],
             env=env)
-        self.assertEqual(rc, 0)
+        if usersite == site.getsitepackages()[0]:
+            self.assertEqual(rc, 1)
+        else:
+            self.assertEqual(rc, 0)
 
         env = os.environ.copy()
         env["PYTHONUSERBASE"] = "/tmp"
@@ -221,7 +234,19 @@ class HelperFunctionsTests(unittest.TestCase):
             self.assertEqual(len(dirs), 1)
             wanted = os.path.join('xoxo', 'Lib', 'site-packages')
             self.assertEqual(dirs[0], wanted)
+        elif (sys.platform == "darwin" and
+            sysconfig.get_config_var("PYTHONFRAMEWORK")):
+            # OS X framework builds
+            site.PREFIXES = ['Python.framework']
+            dirs = site.getsitepackages()
+            self.assertEqual(len(dirs), 3)
+            wanted = os.path.join('/Library',
+                                  sysconfig.get_config_var("PYTHONFRAMEWORK"),
+                                  sys.version[:3],
+                                  'site-packages')
+            self.assertEqual(dirs[2], wanted)
         elif os.sep == '/':
+            # OS X non-framwework builds, Linux, FreeBSD, etc
             self.assertEqual(len(dirs), 2)
             wanted = os.path.join('xoxo', 'lib', 'python' + sys.version[:3],
                                   'site-packages')
@@ -229,20 +254,11 @@ class HelperFunctionsTests(unittest.TestCase):
             wanted = os.path.join('xoxo', 'lib', 'site-python')
             self.assertEqual(dirs[1], wanted)
         else:
+            # other platforms
             self.assertEqual(len(dirs), 2)
             self.assertEqual(dirs[0], 'xoxo')
             wanted = os.path.join('xoxo', 'lib', 'site-packages')
             self.assertEqual(dirs[1], wanted)
-
-        # let's try the specific Apple location
-        if (sys.platform == "darwin" and
-            sysconfig.get_config_var("PYTHONFRAMEWORK")):
-            site.PREFIXES = ['Python.framework']
-            dirs = site.getsitepackages()
-            self.assertEqual(len(dirs), 3)
-            wanted = os.path.join('/Library', 'Python', sys.version[:3],
-                                  'site-packages')
-            self.assertEqual(dirs[2], wanted)
 
 class PthFile(object):
     """Helper class for handling testing of .pth files"""
@@ -357,6 +373,7 @@ class ImportSideEffectTests(unittest.TestCase):
             self.assertNotIn(path, seen_paths)
             seen_paths.add(path)
 
+    @unittest.skip('test not implemented')
     def test_add_build_dir(self):
         # Test that the build directory's Modules directory is used when it
         # should be.
@@ -369,9 +386,10 @@ class ImportSideEffectTests(unittest.TestCase):
         self.assertTrue(hasattr(builtins, "exit"))
 
     def test_setting_copyright(self):
-        # 'copyright' and 'credits' should be in builtins
+        # 'copyright', 'credits', and 'license' should be in builtins
         self.assertTrue(hasattr(builtins, "copyright"))
         self.assertTrue(hasattr(builtins, "credits"))
+        self.assertTrue(hasattr(builtins, "license"))
 
     def test_setting_help(self):
         # 'help' should be set in builtins
@@ -397,8 +415,22 @@ class ImportSideEffectTests(unittest.TestCase):
             else:
                 self.fail("sitecustomize not imported automatically")
 
-def test_main():
-    run_unittest(HelperFunctionsTests, ImportSideEffectTests)
+    @test.support.requires_resource('network')
+    @unittest.skipUnless(sys.version_info[3] == 'final',
+                         'only for released versions')
+    def test_license_exists_at_url(self):
+        # This test is a bit fragile since it depends on the format of the
+        # string displayed by license in the absence of a LICENSE file.
+        url = license._Printer__data.split()[1]
+        req = urllib.request.Request(url, method='HEAD')
+        try:
+            with test.support.transient_internet(url):
+                with urllib.request.urlopen(req) as data:
+                    code = data.getcode()
+        except urllib.error.HTTPError as e:
+            code = e.code
+        self.assertEqual(code, 200, msg="Can't find " + url)
+
 
 if __name__ == "__main__":
-    test_main()
+    unittest.main()

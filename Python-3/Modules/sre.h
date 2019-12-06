@@ -14,11 +14,12 @@
 #include "sre_constants.h"
 
 /* size of a code word (must be unsigned short or larger, and
-   large enough to hold a Py_UNICODE character) */
-#ifdef Py_UNICODE_WIDE
+   large enough to hold a UCS4 character) */
 #define SRE_CODE Py_UCS4
+#if SIZEOF_SIZE_T > 4
+# define SRE_MAXREPEAT (~(SRE_CODE)0)
 #else
-#define SRE_CODE unsigned short
+# define SRE_MAXREPEAT ((SRE_CODE)PY_SSIZE_T_MAX)
 #endif
 
 typedef struct {
@@ -30,7 +31,9 @@ typedef struct {
     PyObject* pattern; /* pattern source (or None) */
     int flags; /* flags used when compiling pattern source */
     PyObject *weakreflist; /* List of weak references */
-	int charsize; /* pattern charsize (or -1) */
+    int logical_charsize; /* pattern charsize (or -1) */
+    int charsize;
+    Py_buffer view;
     /* pattern code */
     Py_ssize_t codesize;
     SRE_CODE code[1];
@@ -71,6 +74,7 @@ typedef struct {
     PyObject* string;
     Py_ssize_t pos, endpos;
     /* character size */
+    int logical_charsize; /* kind of thing: 1 - bytes, 2/4 - unicode */
     int charsize;
     /* registers */
     Py_ssize_t lastindex;
@@ -80,6 +84,7 @@ typedef struct {
     char* data_stack;
     size_t data_stack_size;
     size_t data_stack_base;
+    Py_buffer buffer;
     /* current repeat context */
     SRE_REPEAT *repeat;
     /* hooks */

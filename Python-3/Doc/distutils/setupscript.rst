@@ -139,7 +139,8 @@ directories, libraries to link with, etc.).
 
 All of this is done through another keyword argument to :func:`setup`, the
 :option:`ext_modules` option.  :option:`ext_modules` is just a list of
-:class:`Extension` instances, each of which describes a single extension module.
+:class:`~distutils.core.Extension` instances, each of which describes a
+single extension module.
 Suppose your distribution includes a single extension, called :mod:`foo` and
 implemented by :file:`foo.c`.  If no additional instructions to the
 compiler/linker are needed, describing this extension is quite simple::
@@ -165,8 +166,8 @@ following sections.
 Extension names and packages
 ----------------------------
 
-The first argument to the :class:`Extension` constructor is always the name of
-the extension, including any package names.  For example, ::
+The first argument to the :class:`~distutils.core.Extension` constructor is
+always the name of the extension, including any package names.  For example, ::
 
     Extension('foo', ['src/foo1.c', 'src/foo2.c'])
 
@@ -196,7 +197,8 @@ will compile :file:`foo.c` to the extension :mod:`pkg.foo`, and :file:`bar.c` to
 Extension source files
 ----------------------
 
-The second argument to the :class:`Extension` constructor is a list of source
+The second argument to the :class:`~distutils.core.Extension` constructor is
+a list of source
 files.  Since the Distutils currently only support C, C++, and Objective-C
 extensions, these are normally C/C++/Objective-C source files.  (Be sure to use
 appropriate extensions to distinguish C++\ source files: :file:`.cc` and
@@ -232,9 +234,9 @@ linked into the executable.
 Preprocessor options
 --------------------
 
-Three optional arguments to :class:`Extension` will help if you need to specify
-include directories to search or preprocessor macros to define/undefine:
-``include_dirs``, ``define_macros``, and ``undef_macros``.
+Three optional arguments to :class:`~distutils.core.Extension` will help if
+you need to specify include directories to search or preprocessor macros to
+define/undefine: ``include_dirs``, ``define_macros``, and ``undef_macros``.
 
 For example, if your extension requires header files in the :file:`include`
 directory under your distribution root, use the ``include_dirs`` option::
@@ -254,7 +256,7 @@ code: it's probably better to write C code like  ::
 
 If you need to include header files from some other Python extension, you can
 take advantage of the fact that header files are installed in a consistent way
-by the Distutils :command:`install_header` command.  For example, the Numerical
+by the Distutils :command:`install_headers` command.  For example, the Numerical
 Python header files are installed (on a standard Unix installation) to
 :file:`/usr/local/include/python1.5/Numerical`. (The exact location will differ
 according to your platform and Python installation.)  Since the Python include
@@ -601,7 +603,8 @@ Notes:
     It is recommended that versions take the form *major.minor[.patch[.sub]]*.
 
 (3)
-    Either the author or the maintainer must be identified.
+    Either the author or the maintainer must be identified. If maintainer is
+    provided, distutils lists it as the author in :file:`PKG-INFO`.
 
 (4)
     These fields should not be used if your package is to be compatible with Python
@@ -609,8 +612,9 @@ Notes:
     <http://pypi.python.org/pypi>`_.
 
 (5)
-    The ``long_description`` field is used by PyPI when you are registering a
-    package, to build its home page.
+    The ``long_description`` field is used by PyPI when you are
+    :ref:`registering <package-register>` a package, to
+    :ref:`build its home page <package-display>`.
 
 (6)
     The ``license`` field is a text indicating the license covering the
@@ -681,6 +685,8 @@ include the following code fragment in your :file:`setup.py` before the
         DistributionMetadata.download_url = None
 
 
+.. _debug-setup-script:
+
 Debugging the setup script
 ==========================
 
@@ -696,7 +702,8 @@ installation is broken because they don't read all the way down to the bottom
 and see that it's a permission problem.
 
 On the other hand, this doesn't help the developer to find the cause of the
-failure. For this purpose, the DISTUTILS_DEBUG environment variable can be set
+failure. For this purpose, the :envvar:`DISTUTILS_DEBUG` environment variable can be set
 to anything except an empty string, and distutils will now print detailed
-information what it is doing, and prints the full traceback in case an exception
-occurs.
+information about what it is doing, dump the full traceback when an exception
+occurs, and print the whole command line when an external program (like a C
+compiler) fails.

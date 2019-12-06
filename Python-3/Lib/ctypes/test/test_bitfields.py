@@ -207,7 +207,7 @@ class BitFieldTest(unittest.TestCase):
         class X(Structure):
             _fields_ = [("a", c_byte, 4),
                         ("b", c_int, 32)]
-        self.assertEqual(sizeof(X), sizeof(c_int)*2)
+        self.assertEqual(sizeof(X), alignment(c_int)+sizeof(c_int))
 
     def test_mixed_3(self):
         class X(Structure):
@@ -239,6 +239,26 @@ class BitFieldTest(unittest.TestCase):
         class Y(Structure):
             _anonymous_ = ["_"]
             _fields_ = [("_", X)]
+
+    @unittest.skipUnless(hasattr(ctypes, "c_uint32"), "c_int32 is required")
+    def test_uint32(self):
+        class X(Structure):
+            _fields_ = [("a", c_uint32, 32)]
+        x = X()
+        x.a = 10
+        self.assertEqual(x.a, 10)
+        x.a = 0xFDCBA987
+        self.assertEqual(x.a, 0xFDCBA987)
+
+    @unittest.skipUnless(hasattr(ctypes, "c_uint64"), "c_int64 is required")
+    def test_uint64(self):
+        class X(Structure):
+            _fields_ = [("a", c_uint64, 64)]
+        x = X()
+        x.a = 10
+        self.assertEqual(x.a, 10)
+        x.a = 0xFEDCBA9876543211
+        self.assertEqual(x.a, 0xFEDCBA9876543211)
 
 if __name__ == "__main__":
     unittest.main()

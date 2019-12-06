@@ -11,6 +11,10 @@ from test import support
 import os
 import sys
 import tempfile
+from nturl2path import url2pathname, pathname2url
+
+from base64 import b64encode
+import collections
 
 def hexescape(char):
     """Escape char as RFC 2396 specifies"""
@@ -21,13 +25,18 @@ def hexescape(char):
 
 # Shortcut for testing FancyURLopener
 _urlopener = None
+
+
 def urlopen(url, data=None, proxies=None):
     """urlopen(url [, data]) -> open file-like object"""
     global _urlopener
     if proxies is not None:
         opener = urllib.request.FancyURLopener(proxies=proxies)
     elif not _urlopener:
-        opener = urllib.request.FancyURLopener()
+        with support.check_warnings(
+                ('FancyURLopener style of invoking requests is deprecated.',
+                DeprecationWarning)):
+            opener = urllib.request.FancyURLopener()
         _urlopener = opener
     else:
         opener = _urlopener
@@ -35,6 +44,49 @@ def urlopen(url, data=None, proxies=None):
         return opener.open(url)
     else:
         return opener.open(url, data)
+
+
+class FakeHTTPMixin(object):
+    def fakehttp(self, fakedata):
+        class FakeSocket(io.BytesIO):
+            io_refs = 1
+
+            def sendall(self, data):
+                FakeHTTPConnection.buf = data
+
+            def makefile(self, *args, **kwds):
+                self.io_refs += 1
+                return self
+
+            def read(self, amt=None):
+                if self.closed:
+                    return b""
+                return io.BytesIO.read(self, amt)
+
+            def readline(self, length=None):
+                if self.closed:
+                    return b""
+                return io.BytesIO.readline(self, length)
+
+            def close(self):
+                self.io_refs -= 1
+                if self.io_refs == 0:
+                    io.BytesIO.close(self)
+
+        class FakeHTTPConnection(http.client.HTTPConnection):
+
+            # buffer to store data for verification in urlopen tests.
+            buf = None
+
+            def connect(self):
+                self.sock = FakeSocket(fakedata)
+
+        self._connection_class = http.client.HTTPConnection
+        http.client.HTTPConnection = FakeHTTPConnection
+
+    def unfakehttp(self):
+        http.client.HTTPConnection = self._connection_class
+
 
 class urlopen_FileTests(unittest.TestCase):
     """Test urlopen() opening a temporary file.
@@ -115,6 +167,9 @@ class urlopen_FileTests(unittest.TestCase):
         for line in self.returned_obj:
             self.assertEqual(line, self.text)
 
+    def test_relativelocalfile(self):
+        self.assertRaises(ValueError,urllib.request.urlopen,'./' + self.pathname)
+
 class ProxyTests(unittest.TestCase):
 
     def setUp(self):
@@ -139,34 +194,21 @@ class ProxyTests(unittest.TestCase):
         self.env.set('NO_PROXY', 'localhost, anotherdomain.com, newdomain.com')
         self.assertTrue(urllib.request.proxy_bypass_environment('anotherdomain.com'))
 
-class urlopen_HttpTests(unittest.TestCase):
+    def test_proxy_cgi_ignore(self):
+        try:
+            self.env.set('HTTP_PROXY', 'http://somewhere:3128')
+            proxies = urllib.request.getproxies_environment()
+            self.assertEqual('http://somewhere:3128', proxies['http'])
+            self.env.set('REQUEST_METHOD', 'GET')
+            proxies = urllib.request.getproxies_environment()
+            self.assertNotIn('http', proxies)
+        finally:
+            self.env.unset('REQUEST_METHOD')
+            self.env.unset('HTTP_PROXY')
+
+
+class urlopen_HttpTests(unittest.TestCase, FakeHTTPMixin):
     """Test urlopen() opening a fake http connection."""
-
-    def fakehttp(self, fakedata):
-        class FakeSocket(io.BytesIO):
-            io_refs = 1
-            def sendall(self, str): pass
-            def makefile(self, *args, **kwds):
-                self.io_refs += 1
-                return self
-            def read(self, amt=None):
-                if self.closed: return b""
-                return io.BytesIO.read(self, amt)
-            def readline(self, length=None):
-                if self.closed: return b""
-                return io.BytesIO.readline(self, length)
-            def close(self):
-                self.io_refs -= 1
-                if self.io_refs == 0:
-                    io.BytesIO.close(self)
-        class FakeHTTPConnection(http.client.HTTPConnection):
-            def connect(self):
-                self.sock = FakeSocket(fakedata)
-        self._connection_class = http.client.HTTPConnection
-        http.client.HTTPConnection = FakeHTTPConnection
-
-    def unfakehttp(self):
-        http.client.HTTPConnection = self._connection_class
 
     def check_read(self, ver):
         self.fakehttp(b"HTTP/" + ver + b" 200 OK\r\n\r\nHello!")
@@ -245,6 +287,39 @@ Content-Type: text/html; charset=iso-8859-1
         finally:
             self.unfakehttp()
 
+    def test_missing_localfile(self):
+        # Test for #10836
+        # 3.3 - URLError is not captured, explicit IOError is raised.
+        with self.assertRaises(IOError):
+            urlopen('file://localhost/a/file/which/doesnot/exists.py')
+
+    def test_file_notexists(self):
+        fd, tmp_file = tempfile.mkstemp()
+        tmp_fileurl = 'file://localhost/' + tmp_file.replace(os.path.sep, '/')
+        try:
+            self.assertTrue(os.path.exists(tmp_file))
+            with urlopen(tmp_fileurl) as fobj:
+                self.assertTrue(fobj)
+        finally:
+            os.close(fd)
+            os.unlink(tmp_file)
+        self.assertFalse(os.path.exists(tmp_file))
+        # 3.3 - IOError instead of URLError
+        with self.assertRaises(IOError):
+            urlopen(tmp_fileurl)
+
+    def test_ftp_nohost(self):
+        test_ftp_url = 'ftp:///path'
+        # 3.3 - IOError instead of URLError
+        with self.assertRaises(IOError):
+            urlopen(test_ftp_url)
+
+    def test_ftp_nonexisting(self):
+        # 3.3 - IOError instead of URLError
+        with self.assertRaises(IOError):
+            urlopen('ftp://localhost/a/file/which/doesnot/exists.py')
+
+
     def test_userpass_inurl(self):
         self.fakehttp(b"HTTP/1.0 200 OK\r\n\r\nHello!")
         try:
@@ -255,6 +330,29 @@ Content-Type: text/html; charset=iso-8859-1
             self.assertEqual(fp.getcode(), 200)
         finally:
             self.unfakehttp()
+
+    def test_userpass_inurl_w_spaces(self):
+        self.fakehttp(b"HTTP/1.0 200 OK\r\n\r\nHello!")
+        try:
+            userpass = "a b:c d"
+            url = "http://{}@python.org/".format(userpass)
+            fakehttp_wrapper = http.client.HTTPConnection
+            authorization = ("Authorization: Basic %s\r\n" %
+                             b64encode(userpass.encode("ASCII")).decode("ASCII"))
+            fp = urlopen(url)
+            # The authorization header must be in place
+            self.assertIn(authorization, fakehttp_wrapper.buf.decode("UTF-8"))
+            self.assertEqual(fp.readline(), b"Hello!")
+            self.assertEqual(fp.readline(), b"")
+            # the spaces are quoted in URL so no match
+            self.assertNotEqual(fp.geturl(), url)
+            self.assertEqual(fp.getcode(), 200)
+        finally:
+            self.unfakehttp()
+
+    def test_URLopener_deprecation(self):
+        with support.check_warnings(('',DeprecationWarning)):
+            urllib.request.URLopener()
 
 class urlretrieve_FileTests(unittest.TestCase):
     """Test urllib.urlretrieve() on local files"""
@@ -289,7 +387,7 @@ class urlretrieve_FileTests(unittest.TestCase):
     def constructLocalFileUrl(self, filePath):
         filePath = os.path.abspath(filePath)
         try:
-            filePath.encode("utf8")
+            filePath.encode("utf-8")
         except UnicodeEncodeError:
             raise unittest.SkipTest("filePath is not encodable to utf8")
         return "file://%s" % urllib.request.pathname2url(filePath)
@@ -342,11 +440,11 @@ class urlretrieve_FileTests(unittest.TestCase):
 
     def test_reporthook(self):
         # Make sure that the reporthook works.
-        def hooktester(count, block_size, total_size, count_holder=[0]):
-            self.assertIsInstance(count, int)
-            self.assertIsInstance(block_size, int)
-            self.assertIsInstance(total_size, int)
-            self.assertEqual(count, count_holder[0])
+        def hooktester(block_count, block_read_size, file_size, count_holder=[0]):
+            self.assertIsInstance(block_count, int)
+            self.assertIsInstance(block_read_size, int)
+            self.assertIsInstance(file_size, int)
+            self.assertEqual(block_count, count_holder[0])
             count_holder[0] = count_holder[0] + 1
         second_temp = "%s.2" % support.TESTFN
         self.registerFileForCleanUp(second_temp)
@@ -357,8 +455,8 @@ class urlretrieve_FileTests(unittest.TestCase):
     def test_reporthook_0_bytes(self):
         # Test on zero length file. Should call reporthook only 1 time.
         report = []
-        def hooktester(count, block_size, total_size, _report=report):
-            _report.append((count, block_size, total_size))
+        def hooktester(block_count, block_read_size, file_size, _report=report):
+            _report.append((block_count, block_read_size, file_size))
         srcFileName = self.createNewTempFile()
         urllib.request.urlretrieve(self.constructLocalFileUrl(srcFileName),
             support.TESTFN, hooktester)
@@ -368,31 +466,74 @@ class urlretrieve_FileTests(unittest.TestCase):
     def test_reporthook_5_bytes(self):
         # Test on 5 byte file. Should call reporthook only 2 times (once when
         # the "network connection" is established and once when the block is
-        # read). Since the block size is 8192 bytes, only one block read is
-        # required to read the entire file.
+        # read).
         report = []
-        def hooktester(count, block_size, total_size, _report=report):
-            _report.append((count, block_size, total_size))
+        def hooktester(block_count, block_read_size, file_size, _report=report):
+            _report.append((block_count, block_read_size, file_size))
         srcFileName = self.createNewTempFile(b"x" * 5)
         urllib.request.urlretrieve(self.constructLocalFileUrl(srcFileName),
             support.TESTFN, hooktester)
         self.assertEqual(len(report), 2)
-        self.assertEqual(report[0][1], 8192)
         self.assertEqual(report[0][2], 5)
+        self.assertEqual(report[1][2], 5)
 
     def test_reporthook_8193_bytes(self):
         # Test on 8193 byte file. Should call reporthook only 3 times (once
         # when the "network connection" is established, once for the next 8192
         # bytes, and once for the last byte).
         report = []
-        def hooktester(count, block_size, total_size, _report=report):
-            _report.append((count, block_size, total_size))
+        def hooktester(block_count, block_read_size, file_size, _report=report):
+            _report.append((block_count, block_read_size, file_size))
         srcFileName = self.createNewTempFile(b"x" * 8193)
         urllib.request.urlretrieve(self.constructLocalFileUrl(srcFileName),
             support.TESTFN, hooktester)
         self.assertEqual(len(report), 3)
-        self.assertEqual(report[0][1], 8192)
         self.assertEqual(report[0][2], 8193)
+        self.assertEqual(report[0][1], 8192)
+        self.assertEqual(report[1][1], 8192)
+        self.assertEqual(report[2][1], 8192)
+
+
+class urlretrieve_HttpTests(unittest.TestCase, FakeHTTPMixin):
+    """Test urllib.urlretrieve() using fake http connections"""
+
+    def test_short_content_raises_ContentTooShortError(self):
+        self.fakehttp(b'''HTTP/1.1 200 OK
+Date: Wed, 02 Jan 2008 03:03:54 GMT
+Server: Apache/1.3.33 (Debian GNU/Linux) mod_ssl/2.8.22 OpenSSL/0.9.7e
+Connection: close
+Content-Length: 100
+Content-Type: text/html; charset=iso-8859-1
+
+FF
+''')
+
+        def _reporthook(par1, par2, par3):
+            pass
+
+        with self.assertRaises(urllib.error.ContentTooShortError):
+            try:
+                urllib.request.urlretrieve('http://example.com/',
+                                           reporthook=_reporthook)
+            finally:
+                self.unfakehttp()
+
+    def test_short_content_raises_ContentTooShortError_without_reporthook(self):
+        self.fakehttp(b'''HTTP/1.1 200 OK
+Date: Wed, 02 Jan 2008 03:03:54 GMT
+Server: Apache/1.3.33 (Debian GNU/Linux) mod_ssl/2.8.22 OpenSSL/0.9.7e
+Connection: close
+Content-Length: 100
+Content-Type: text/html; charset=iso-8859-1
+
+FF
+''')
+        with self.assertRaises(urllib.error.ContentTooShortError):
+            try:
+                urllib.request.urlretrieve('http://example.com/')
+            finally:
+                self.unfakehttp()
+
 
 class QuotingTests(unittest.TestCase):
     """Tests for urllib.quote() and urllib.quote_plus()
@@ -490,6 +631,7 @@ class QuotingTests(unittest.TestCase):
         result = urllib.parse.quote(partial_quote)
         self.assertEqual(expected, result,
                          "using quote(): %r != %r" % (expected, result))
+        result = urllib.parse.quote_plus(partial_quote)
         self.assertEqual(expected, result,
                          "using quote_plus(): %r != %r" % (expected, result))
 
@@ -869,8 +1011,9 @@ class urlencode_Tests(unittest.TestCase):
         self.assertEqual("a=1&a=2", urllib.parse.urlencode({"a": [1, 2]}, True))
         self.assertEqual("a=None&a=a",
                          urllib.parse.urlencode({"a": [None, "a"]}, True))
+        data = collections.OrderedDict([("a", 1), ("b", 1)])
         self.assertEqual("a=a&a=b",
-                         urllib.parse.urlencode({"a": {"a": 1, "b": 1}}, True))
+                         urllib.parse.urlencode({"a": data}, True))
 
     def test_urlencode_encoding(self):
         # ASCII encoding. Expect %3F with errors="replace'
@@ -1056,6 +1199,13 @@ class Utility_Tests(unittest.TestCase):
         self.assertEqual(('user', 'a\fb'),urllib.parse.splitpasswd('user:a\fb'))
         self.assertEqual(('user', 'a\vb'),urllib.parse.splitpasswd('user:a\vb'))
         self.assertEqual(('user', 'a:b'),urllib.parse.splitpasswd('user:a:b'))
+        self.assertEqual(('user', 'a b'),urllib.parse.splitpasswd('user:a b'))
+        self.assertEqual(('user 2', 'ab'),urllib.parse.splitpasswd('user 2:ab'))
+        self.assertEqual(('user+1', 'a+b'),urllib.parse.splitpasswd('user+1:a+b'))
+
+    def test_thishost(self):
+        """Test the urllib.request.thishost utility function returns a tuple"""
+        self.assertIsInstance(urllib.request.thishost(), tuple)
 
 
 class URLopener_Tests(unittest.TestCase):
@@ -1065,21 +1215,23 @@ class URLopener_Tests(unittest.TestCase):
         class DummyURLopener(urllib.request.URLopener):
             def open_spam(self, url):
                 return url
+        with support.check_warnings(
+                ('DummyURLopener style of invoking requests is deprecated.',
+                DeprecationWarning)):
+            self.assertEqual(DummyURLopener().open(
+                'spam://example/ /'),'//example/%20/')
 
-        self.assertEqual(DummyURLopener().open(
-            'spam://example/ /'),'//example/%20/')
-
-        # test the safe characters are not quoted by urlopen
-        self.assertEqual(DummyURLopener().open(
-            "spam://c:|windows%/:=&?~#+!$,;'@()*[]|/path/"),
-            "//c:|windows%/:=&?~#+!$,;'@()*[]|/path/")
+            # test the safe characters are not quoted by urlopen
+            self.assertEqual(DummyURLopener().open(
+                "spam://c:|windows%/:=&?~#+!$,;'@()*[]|/path/"),
+                "//c:|windows%/:=&?~#+!$,;'@()*[]|/path/")
 
 # Just commented them out.
 # Can't really tell why keep failing in windows and sparc.
 # Everywhere else they work ok, but on those machines, sometimes
 # fail in one of the tests, sometimes in other. I have a linux, and
 # the tests go ok.
-# If anybody has one of the problematic enviroments, please help!
+# If anybody has one of the problematic environments, please help!
 # .   Facundo
 #
 # def server(evt):
@@ -1125,7 +1277,7 @@ class URLopener_Tests(unittest.TestCase):
 #     def testTimeoutNone(self):
 #         # global default timeout is ignored
 #         import socket
-#         self.assertTrue(socket.getdefaulttimeout() is None)
+#         self.assertIsNone(socket.getdefaulttimeout())
 #         socket.setdefaulttimeout(30)
 #         try:
 #             ftp = urllib.ftpwrapper("myuser", "mypass", "localhost", 9093, [])
@@ -1137,7 +1289,7 @@ class URLopener_Tests(unittest.TestCase):
 #     def testTimeoutDefault(self):
 #         # global default timeout is used
 #         import socket
-#         self.assertTrue(socket.getdefaulttimeout() is None)
+#         self.assertIsNone(socket.getdefaulttimeout())
 #         socket.setdefaulttimeout(30)
 #         try:
 #             ftp = urllib.ftpwrapper("myuser", "mypass", "localhost", 9093, [])
@@ -1152,24 +1304,84 @@ class URLopener_Tests(unittest.TestCase):
 #         self.assertEqual(ftp.ftp.sock.gettimeout(), 30)
 #         ftp.close()
 
+class RequestTests(unittest.TestCase):
+    """Unit tests for urllib.request.Request."""
+
+    def test_default_values(self):
+        Request = urllib.request.Request
+        request = Request("http://www.python.org")
+        self.assertEqual(request.get_method(), 'GET')
+        request = Request("http://www.python.org", {})
+        self.assertEqual(request.get_method(), 'POST')
+
+    def test_with_method_arg(self):
+        Request = urllib.request.Request
+        request = Request("http://www.python.org", method='HEAD')
+        self.assertEqual(request.method, 'HEAD')
+        self.assertEqual(request.get_method(), 'HEAD')
+        request = Request("http://www.python.org", {}, method='HEAD')
+        self.assertEqual(request.method, 'HEAD')
+        self.assertEqual(request.get_method(), 'HEAD')
+        request = Request("http://www.python.org", method='GET')
+        self.assertEqual(request.get_method(), 'GET')
+        request.method = 'HEAD'
+        self.assertEqual(request.get_method(), 'HEAD')
 
 
-def test_main():
-    support.run_unittest(
-        urlopen_FileTests,
-        urlopen_HttpTests,
-        urlretrieve_FileTests,
-        ProxyTests,
-        QuotingTests,
-        UnquotingTests,
-        urlencode_Tests,
-        Pathname_Tests,
-        Utility_Tests,
-        URLopener_Tests,
-        #FTPWrapperTests,
-    )
+class URL2PathNameTests(unittest.TestCase):
 
+    def test_converting_drive_letter(self):
+        self.assertEqual(url2pathname("///C|"), 'C:')
+        self.assertEqual(url2pathname("///C:"), 'C:')
+        self.assertEqual(url2pathname("///C|/"), 'C:\\')
 
+    def test_converting_when_no_drive_letter(self):
+        # cannot end a raw string in \
+        self.assertEqual(url2pathname("///C/test/"), r'\\\C\test' '\\')
+        self.assertEqual(url2pathname("////C/test/"), r'\\C\test' '\\')
+
+    def test_simple_compare(self):
+        self.assertEqual(url2pathname("///C|/foo/bar/spam.foo"),
+                         r'C:\foo\bar\spam.foo')
+
+    def test_non_ascii_drive_letter(self):
+        self.assertRaises(IOError, url2pathname, "///\u00e8|/")
+
+    def test_roundtrip_url2pathname(self):
+        list_of_paths = ['C:',
+                         r'\\\C\test\\',
+                         r'C:\foo\bar\spam.foo'
+                         ]
+        for path in list_of_paths:
+            self.assertEqual(url2pathname(pathname2url(path)), path)
+
+class PathName2URLTests(unittest.TestCase):
+
+    def test_converting_drive_letter(self):
+        self.assertEqual(pathname2url("C:"), '///C:')
+        self.assertEqual(pathname2url("C:\\"), '///C:')
+
+    def test_converting_when_no_drive_letter(self):
+        self.assertEqual(pathname2url(r"\\\folder\test" "\\"),
+                         '/////folder/test/')
+        self.assertEqual(pathname2url(r"\\folder\test" "\\"),
+                         '////folder/test/')
+        self.assertEqual(pathname2url(r"\folder\test" "\\"),
+                         '/folder/test/')
+
+    def test_simple_compare(self):
+        self.assertEqual(pathname2url(r'C:\foo\bar\spam.foo'),
+                         "///C:/foo/bar/spam.foo" )
+
+    def test_long_drive_letter(self):
+        self.assertRaises(IOError, pathname2url, "XX:\\")
+
+    def test_roundtrip_pathname2url(self):
+        list_of_paths = ['///C:',
+                         '/////folder/test/',
+                         '///C:/foo/bar/spam.foo']
+        for path in list_of_paths:
+            self.assertEqual(pathname2url(url2pathname(path)), path)
 
 if __name__ == '__main__':
-    test_main()
+    unittest.main()

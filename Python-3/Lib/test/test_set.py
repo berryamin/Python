@@ -9,6 +9,7 @@ from random import randrange, shuffle
 import sys
 import warnings
 import collections
+import collections.abc
 
 class PassThru(Exception):
     pass
@@ -36,7 +37,7 @@ class HashCountingInt(int):
         self.hash_count += 1
         return int.__hash__(self)
 
-class TestJointOps(unittest.TestCase):
+class TestJointOps:
     # Tests common to both set and frozenset
 
     def setUp(self):
@@ -234,6 +235,26 @@ class TestJointOps(unittest.TestCase):
                 dup = pickle.loads(p)
                 self.assertEqual(self.s.x, dup.x)
 
+    def test_iterator_pickling(self):
+        itorg = iter(self.s)
+        data = self.thetype(self.s)
+        d = pickle.dumps(itorg)
+        it = pickle.loads(d)
+        # Set iterators unpickle as list iterators due to the
+        # undefined order of set items.
+        # self.assertEqual(type(itorg), type(it))
+        self.assertTrue(isinstance(it, collections.abc.Iterator))
+        self.assertEqual(self.thetype(it), data)
+
+        it = pickle.loads(d)
+        try:
+            drop = next(it)
+        except StopIteration:
+            return
+        d = pickle.dumps(it)
+        it = pickle.loads(d)
+        self.assertEqual(self.thetype(it), data - self.thetype((drop,)))
+
     def test_deepcopy(self):
         class Tracer:
             def __init__(self, value):
@@ -340,7 +361,7 @@ class TestJointOps(unittest.TestCase):
         gc.collect()
         self.assertTrue(ref() is None, "Cycle was not collected")
 
-class TestSet(TestJointOps):
+class TestSet(TestJointOps, unittest.TestCase):
     thetype = set
     basetype = set
 
@@ -604,10 +625,10 @@ class TestSet(TestJointOps):
         myset >= myobj
         self.assertTrue(myobj.le_called)
 
-    # C API test only available in a debug build
-    if hasattr(set, "test_c_api"):
-        def test_c_api(self):
-            self.assertEqual(set().test_c_api(), True)
+    @unittest.skipUnless(hasattr(set, "test_c_api"),
+                         'C API test only available in a debug build')
+    def test_c_api(self):
+        self.assertEqual(set().test_c_api(), True)
 
 class SetSubclass(set):
     pass
@@ -626,7 +647,7 @@ class TestSetSubclassWithKeywordArgs(TestSet):
         'SF bug #1486663 -- this used to erroneously raise a TypeError'
         SetSubclassWithKeywordArgs(newarg=1)
 
-class TestFrozenSet(TestJointOps):
+class TestFrozenSet(TestJointOps, unittest.TestCase):
     thetype = frozenset
     basetype = frozenset
 
@@ -727,11 +748,22 @@ empty_set = set()
 
 #==============================================================================
 
-class TestBasicOps(unittest.TestCase):
+class TestBasicOps:
 
     def test_repr(self):
         if self.repr is not None:
             self.assertEqual(repr(self.set), self.repr)
+
+    def check_repr_against_values(self):
+        text = repr(self.set)
+        self.assertTrue(text.startswith('{'))
+        self.assertTrue(text.endswith('}'))
+
+        result = text[1:-1].split(', ')
+        result.sort()
+        sorted_repr_values = [repr(value) for value in self.values]
+        sorted_repr_values.sort()
+        self.assertEqual(result, sorted_repr_values)
 
     def test_print(self):
         try:
@@ -828,7 +860,7 @@ class TestBasicOps(unittest.TestCase):
 
 #------------------------------------------------------------------------------
 
-class TestBasicOpsEmpty(TestBasicOps):
+class TestBasicOpsEmpty(TestBasicOps, unittest.TestCase):
     def setUp(self):
         self.case   = "empty set"
         self.values = []
@@ -839,7 +871,7 @@ class TestBasicOpsEmpty(TestBasicOps):
 
 #------------------------------------------------------------------------------
 
-class TestBasicOpsSingleton(TestBasicOps):
+class TestBasicOpsSingleton(TestBasicOps, unittest.TestCase):
     def setUp(self):
         self.case   = "unit set (number)"
         self.values = [3]
@@ -856,7 +888,7 @@ class TestBasicOpsSingleton(TestBasicOps):
 
 #------------------------------------------------------------------------------
 
-class TestBasicOpsTuple(TestBasicOps):
+class TestBasicOpsTuple(TestBasicOps, unittest.TestCase):
     def setUp(self):
         self.case   = "unit set (tuple)"
         self.values = [(0, "zero")]
@@ -873,7 +905,7 @@ class TestBasicOpsTuple(TestBasicOps):
 
 #------------------------------------------------------------------------------
 
-class TestBasicOpsTriple(TestBasicOps):
+class TestBasicOpsTriple(TestBasicOps, unittest.TestCase):
     def setUp(self):
         self.case   = "triple set"
         self.values = [0, "zero", operator.add]
@@ -884,29 +916,33 @@ class TestBasicOpsTriple(TestBasicOps):
 
 #------------------------------------------------------------------------------
 
-class TestBasicOpsString(TestBasicOps):
+class TestBasicOpsString(TestBasicOps, unittest.TestCase):
     def setUp(self):
         self.case   = "string set"
         self.values = ["a", "b", "c"]
         self.set    = set(self.values)
         self.dup    = set(self.values)
         self.length = 3
-        self.repr   = "{'a', 'c', 'b'}"
+
+    def test_repr(self):
+        self.check_repr_against_values()
 
 #------------------------------------------------------------------------------
 
-class TestBasicOpsBytes(TestBasicOps):
+class TestBasicOpsBytes(TestBasicOps, unittest.TestCase):
     def setUp(self):
         self.case   = "string set"
         self.values = [b"a", b"b", b"c"]
         self.set    = set(self.values)
         self.dup    = set(self.values)
         self.length = 3
-        self.repr   = "{b'a', b'c', b'b'}"
+
+    def test_repr(self):
+        self.check_repr_against_values()
 
 #------------------------------------------------------------------------------
 
-class TestBasicOpsMixedStringBytes(TestBasicOps):
+class TestBasicOpsMixedStringBytes(TestBasicOps, unittest.TestCase):
     def setUp(self):
         self._warning_filters = support.check_warnings()
         self._warning_filters.__enter__()
@@ -916,10 +952,12 @@ class TestBasicOpsMixedStringBytes(TestBasicOps):
         self.set    = set(self.values)
         self.dup    = set(self.values)
         self.length = 4
-        self.repr   = "{'a', b'a', 'b', b'b'}"
 
     def tearDown(self):
         self._warning_filters.__exit__(None, None, None)
+
+    def test_repr(self):
+        self.check_repr_against_values()
 
 #==============================================================================
 
@@ -1203,7 +1241,7 @@ class TestMutate(unittest.TestCase):
 
 #==============================================================================
 
-class TestSubsets(unittest.TestCase):
+class TestSubsets:
 
     case2method = {"<=": "issubset",
                    ">=": "issuperset",
@@ -1241,7 +1279,7 @@ class TestSubsets(unittest.TestCase):
                 self.assertEqual(result, expected)
 #------------------------------------------------------------------------------
 
-class TestSubsetEqualEmpty(TestSubsets):
+class TestSubsetEqualEmpty(TestSubsets, unittest.TestCase):
     left  = set()
     right = set()
     name  = "both empty"
@@ -1249,7 +1287,7 @@ class TestSubsetEqualEmpty(TestSubsets):
 
 #------------------------------------------------------------------------------
 
-class TestSubsetEqualNonEmpty(TestSubsets):
+class TestSubsetEqualNonEmpty(TestSubsets, unittest.TestCase):
     left  = set([1, 2])
     right = set([1, 2])
     name  = "equal pair"
@@ -1257,7 +1295,7 @@ class TestSubsetEqualNonEmpty(TestSubsets):
 
 #------------------------------------------------------------------------------
 
-class TestSubsetEmptyNonEmpty(TestSubsets):
+class TestSubsetEmptyNonEmpty(TestSubsets, unittest.TestCase):
     left  = set()
     right = set([1, 2])
     name  = "one empty, one non-empty"
@@ -1265,7 +1303,7 @@ class TestSubsetEmptyNonEmpty(TestSubsets):
 
 #------------------------------------------------------------------------------
 
-class TestSubsetPartial(TestSubsets):
+class TestSubsetPartial(TestSubsets, unittest.TestCase):
     left  = set([1])
     right = set([1, 2])
     name  = "one a non-empty proper subset of other"
@@ -1273,7 +1311,7 @@ class TestSubsetPartial(TestSubsets):
 
 #------------------------------------------------------------------------------
 
-class TestSubsetNonOverlap(TestSubsets):
+class TestSubsetNonOverlap(TestSubsets, unittest.TestCase):
     left  = set([1])
     right = set([2])
     name  = "neither empty, neither contains"
@@ -1281,7 +1319,7 @@ class TestSubsetNonOverlap(TestSubsets):
 
 #==============================================================================
 
-class TestOnlySetsInBinaryOps(unittest.TestCase):
+class TestOnlySetsInBinaryOps:
 
     def test_eq_ne(self):
         # Unlike the others, this is testing that == and != *are* allowed.
@@ -1397,7 +1435,7 @@ class TestOnlySetsInBinaryOps(unittest.TestCase):
 
 #------------------------------------------------------------------------------
 
-class TestOnlySetsNumeric(TestOnlySetsInBinaryOps):
+class TestOnlySetsNumeric(TestOnlySetsInBinaryOps, unittest.TestCase):
     def setUp(self):
         self.set   = set((1, 2, 3))
         self.other = 19
@@ -1405,7 +1443,7 @@ class TestOnlySetsNumeric(TestOnlySetsInBinaryOps):
 
 #------------------------------------------------------------------------------
 
-class TestOnlySetsDict(TestOnlySetsInBinaryOps):
+class TestOnlySetsDict(TestOnlySetsInBinaryOps, unittest.TestCase):
     def setUp(self):
         self.set   = set((1, 2, 3))
         self.other = {1:2, 3:4}
@@ -1413,7 +1451,7 @@ class TestOnlySetsDict(TestOnlySetsInBinaryOps):
 
 #------------------------------------------------------------------------------
 
-class TestOnlySetsOperator(TestOnlySetsInBinaryOps):
+class TestOnlySetsOperator(TestOnlySetsInBinaryOps, unittest.TestCase):
     def setUp(self):
         self.set   = set((1, 2, 3))
         self.other = operator.add
@@ -1421,7 +1459,7 @@ class TestOnlySetsOperator(TestOnlySetsInBinaryOps):
 
 #------------------------------------------------------------------------------
 
-class TestOnlySetsTuple(TestOnlySetsInBinaryOps):
+class TestOnlySetsTuple(TestOnlySetsInBinaryOps, unittest.TestCase):
     def setUp(self):
         self.set   = set((1, 2, 3))
         self.other = (2, 4, 6)
@@ -1429,7 +1467,7 @@ class TestOnlySetsTuple(TestOnlySetsInBinaryOps):
 
 #------------------------------------------------------------------------------
 
-class TestOnlySetsString(TestOnlySetsInBinaryOps):
+class TestOnlySetsString(TestOnlySetsInBinaryOps, unittest.TestCase):
     def setUp(self):
         self.set   = set((1, 2, 3))
         self.other = 'abc'
@@ -1437,7 +1475,7 @@ class TestOnlySetsString(TestOnlySetsInBinaryOps):
 
 #------------------------------------------------------------------------------
 
-class TestOnlySetsGenerator(TestOnlySetsInBinaryOps):
+class TestOnlySetsGenerator(TestOnlySetsInBinaryOps, unittest.TestCase):
     def setUp(self):
         def gen():
             for i in range(0, 10, 2):
@@ -1448,7 +1486,7 @@ class TestOnlySetsGenerator(TestOnlySetsInBinaryOps):
 
 #==============================================================================
 
-class TestCopying(unittest.TestCase):
+class TestCopying:
 
     def test_copy(self):
         dup = self.set.copy()
@@ -1469,31 +1507,31 @@ class TestCopying(unittest.TestCase):
 
 #------------------------------------------------------------------------------
 
-class TestCopyingEmpty(TestCopying):
+class TestCopyingEmpty(TestCopying, unittest.TestCase):
     def setUp(self):
         self.set = set()
 
 #------------------------------------------------------------------------------
 
-class TestCopyingSingleton(TestCopying):
+class TestCopyingSingleton(TestCopying, unittest.TestCase):
     def setUp(self):
         self.set = set(["hello"])
 
 #------------------------------------------------------------------------------
 
-class TestCopyingTriple(TestCopying):
+class TestCopyingTriple(TestCopying, unittest.TestCase):
     def setUp(self):
         self.set = set(["zero", 0, None])
 
 #------------------------------------------------------------------------------
 
-class TestCopyingTuple(TestCopying):
+class TestCopyingTuple(TestCopying, unittest.TestCase):
     def setUp(self):
         self.set = set([(1, 2)])
 
 #------------------------------------------------------------------------------
 
-class TestCopyingNested(TestCopying):
+class TestCopyingNested(TestCopying, unittest.TestCase):
     def setUp(self):
         self.set = set([((1, 2), (3, 4))])
 
@@ -1636,7 +1674,7 @@ class TestVariousIteratorArgs(unittest.TestCase):
             for meth in (s.union, s.intersection, s.difference, s.symmetric_difference, s.isdisjoint):
                 for g in (G, I, Ig, L, R):
                     expected = meth(data)
-                    actual = meth(G(data))
+                    actual = meth(g(data))
                     if isinstance(expected, bool):
                         self.assertEqual(actual, expected)
                     else:
@@ -1799,58 +1837,5 @@ class TestGraphs(unittest.TestCase):
 
 #==============================================================================
 
-def test_main(verbose=None):
-    test_classes = (
-        TestSet,
-        TestSetSubclass,
-        TestSetSubclassWithKeywordArgs,
-        TestFrozenSet,
-        TestFrozenSetSubclass,
-        TestSetOfSets,
-        TestExceptionPropagation,
-        TestBasicOpsEmpty,
-        TestBasicOpsSingleton,
-        TestBasicOpsTuple,
-        TestBasicOpsTriple,
-        TestBasicOpsString,
-        TestBasicOpsBytes,
-        TestBasicOpsMixedStringBytes,
-        TestBinaryOps,
-        TestUpdateOps,
-        TestMutate,
-        TestSubsetEqualEmpty,
-        TestSubsetEqualNonEmpty,
-        TestSubsetEmptyNonEmpty,
-        TestSubsetPartial,
-        TestSubsetNonOverlap,
-        TestOnlySetsNumeric,
-        TestOnlySetsDict,
-        TestOnlySetsOperator,
-        TestOnlySetsTuple,
-        TestOnlySetsString,
-        TestOnlySetsGenerator,
-        TestCopyingEmpty,
-        TestCopyingSingleton,
-        TestCopyingTriple,
-        TestCopyingTuple,
-        TestCopyingNested,
-        TestIdentities,
-        TestVariousIteratorArgs,
-        TestGraphs,
-        TestWeirdBugs,
-        )
-
-    support.run_unittest(*test_classes)
-
-    # verify reference counting
-    if verbose and hasattr(sys, "gettotalrefcount"):
-        import gc
-        counts = [None] * 5
-        for i in range(len(counts)):
-            support.run_unittest(*test_classes)
-            gc.collect()
-            counts[i] = sys.gettotalrefcount()
-        print(counts)
-
 if __name__ == "__main__":
-    test_main(verbose=True)
+    unittest.main()

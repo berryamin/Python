@@ -1,15 +1,17 @@
 import io
+import socket
 import datetime
 import textwrap
 import unittest
 import functools
 import contextlib
-import collections
 from test import support
-from nntplib import NNTP, GroupInfo, _have_ssl
+from nntplib import NNTP, GroupInfo
 import nntplib
-if _have_ssl:
+try:
     import ssl
+except ImportError:
+    ssl = None
 
 TIMEOUT = 30
 
@@ -177,7 +179,13 @@ class NetworkedNNTPTestsMixin:
         resp, article = self.server.article(art_num)
         self.assertTrue(resp.startswith("220 "), resp)
         self.check_article_resp(resp, article, art_num)
-        self.assertEqual(article.lines, head.lines + [b''] + body.lines)
+        # Tolerate running the tests from behind a NNTP virus checker
+        blacklist = lambda line: line.startswith(b'X-Antivirus')
+        filtered_head_lines = [line for line in head.lines
+                               if not blacklist(line)]
+        filtered_lines = [line for line in article.lines
+                          if not blacklist(line)]
+        self.assertEqual(filtered_lines, filtered_head_lines + [b''] + body.lines)
 
     def test_capabilities(self):
         # The server under test implements NNTP version 2 and has a
@@ -193,23 +201,23 @@ class NetworkedNNTPTestsMixin:
         resp, caps = self.server.capabilities()
         _check_caps(caps)
 
-    if _have_ssl:
-        def test_starttls(self):
-            file = self.server.file
-            sock = self.server.sock
-            try:
-                self.server.starttls()
-            except nntplib.NNTPPermanentError:
-                self.skipTest("STARTTLS not supported by server.")
-            else:
-                # Check that the socket and internal pseudo-file really were
-                # changed.
-                self.assertNotEqual(file, self.server.file)
-                self.assertNotEqual(sock, self.server.sock)
-                # Check that the new socket really is an SSL one
-                self.assertIsInstance(self.server.sock, ssl.SSLSocket)
-                # Check that trying starttls when it's already active fails.
-                self.assertRaises(ValueError, self.server.starttls)
+    @unittest.skipUnless(ssl, 'requires SSL support')
+    def test_starttls(self):
+        file = self.server.file
+        sock = self.server.sock
+        try:
+            self.server.starttls()
+        except nntplib.NNTPPermanentError:
+            self.skipTest("STARTTLS not supported by server.")
+        else:
+            # Check that the socket and internal pseudo-file really were
+            # changed.
+            self.assertNotEqual(file, self.server.file)
+            self.assertNotEqual(sock, self.server.sock)
+            # Check that the new socket really is an SSL one
+            self.assertIsInstance(self.server.sock, ssl.SSLSocket)
+            # Check that trying starttls when it's already active fails.
+            self.assertRaises(ValueError, self.server.starttls)
 
     def test_zlogin(self):
         # This test must be the penultimate because further commands will be
@@ -246,11 +254,31 @@ class NetworkedNNTPTestsMixin:
             if not name.startswith('test_'):
                 continue
             meth = getattr(cls, name)
-            if not isinstance(meth, collections.Callable):
+            if not callable(meth):
                 continue
             # Need to use a closure so that meth remains bound to its current
             # value
             setattr(cls, name, wrap_meth(meth))
+
+    def test_with_statement(self):
+        def is_connected():
+            if not hasattr(server, 'file'):
+                return False
+            try:
+                server.help()
+            except (socket.error, EOFError):
+                return False
+            return True
+
+        with self.NNTP_CLASS(self.NNTP_HOST, timeout=TIMEOUT, usenetrc=False) as server:
+            self.assertTrue(is_connected())
+            self.assertTrue(server.help())
+        self.assertFalse(is_connected())
+
+        with self.NNTP_CLASS(self.NNTP_HOST, timeout=TIMEOUT, usenetrc=False) as server:
+            server.quit()
+        self.assertFalse(is_connected())
+
 
 NetworkedNNTPTestsMixin.wrap_methods()
 
@@ -274,25 +302,24 @@ class NetworkedNNTPTests(NetworkedNNTPTestsMixin, unittest.TestCase):
         if cls.server is not None:
             cls.server.quit()
 
+@unittest.skipUnless(ssl, 'requires SSL support')
+class NetworkedNNTP_SSLTests(NetworkedNNTPTests):
 
-if _have_ssl:
-    class NetworkedNNTP_SSLTests(NetworkedNNTPTests):
+    # Technical limits for this public NNTP server (see http://www.aioe.org):
+    # "Only two concurrent connections per IP address are allowed and
+    # 400 connections per day are accepted from each IP address."
 
-        # Technical limits for this public NNTP server (see http://www.aioe.org):
-        # "Only two concurrent connections per IP address are allowed and
-        # 400 connections per day are accepted from each IP address."
+    NNTP_HOST = 'nntp.aioe.org'
+    GROUP_NAME = 'comp.lang.python'
+    GROUP_PAT = 'comp.lang.*'
 
-        NNTP_HOST = 'nntp.aioe.org'
-        GROUP_NAME = 'comp.lang.python'
-        GROUP_PAT = 'comp.lang.*'
+    NNTP_CLASS = getattr(nntplib, 'NNTP_SSL', None)
 
-        NNTP_CLASS = nntplib.NNTP_SSL
+    # Disabled as it produces too much data
+    test_list = None
 
-        # Disabled as it produces too much data
-        test_list = None
-
-        # Disabled as the connection will already be encrypted.
-        test_starttls = None
+    # Disabled as the connection will already be encrypted.
+    test_starttls = None
 
 
 #
@@ -365,6 +392,12 @@ class MockedNNTPTestsMixin:
         return self.server
 
 
+class MockedNNTPWithReaderModeMixin(MockedNNTPTestsMixin):
+    def setUp(self):
+        super().setUp()
+        self.make_server(readermode=True)
+
+
 class NNTPv1Handler:
     """A handler for RFC 977"""
 
@@ -375,6 +408,8 @@ class NNTPv1Handler:
         self.allow_posting = True
         self._readline = readline
         self._push_data = push_data
+        self._logged_in = False
+        self._user_sent = False
         # Our welcome
         self.handle_welcome()
 
@@ -550,6 +585,11 @@ class NNTPv1Handler:
                 <a4929a40-6328-491a-aaaf-cb79ed7309a2@q2g2000vbk.googlegroups.com>
                 <f30c0419-f549-4218-848f-d7d0131da931@y3g2000vbm.googlegroups.com>
                 .""")
+        elif (group == 'comp.lang.python' and
+              date_str in ('20100101', '100101') and
+              time_str == '090000'):
+            self.push_lit('too long line' * 3000 +
+                          '\n.')
         else:
             self.push_lit("""\
                 230 An empty list of newsarticles follows
@@ -667,25 +707,85 @@ class NNTPv1Handler:
         self.push_lit(self.sample_body)
         self.push_lit(".")
 
+    def handle_AUTHINFO(self, cred_type, data):
+        if self._logged_in:
+            self.push_lit('502 Already Logged In')
+        elif cred_type == 'user':
+            if self._user_sent:
+                self.push_lit('482 User Credential Already Sent')
+            else:
+                self.push_lit('381 Password Required')
+                self._user_sent = True
+        elif cred_type == 'pass':
+            self.push_lit('281 Login Successful')
+            self._logged_in = True
+        else:
+            raise Exception('Unknown cred type {}'.format(cred_type))
+
 
 class NNTPv2Handler(NNTPv1Handler):
     """A handler for RFC 3977 (NNTP "v2")"""
 
     def handle_CAPABILITIES(self):
-        self.push_lit("""\
+        fmt = """\
             101 Capability list:
             VERSION 2 3
-            IMPLEMENTATION INN 2.5.1
-            AUTHINFO USER
+            IMPLEMENTATION INN 2.5.1{}
             HDR
             LIST ACTIVE ACTIVE.TIMES DISTRIB.PATS HEADERS NEWSGROUPS OVERVIEW.FMT
             OVER
             POST
             READER
-            .""")
+            ."""
+
+        if not self._logged_in:
+            self.push_lit(fmt.format('\n            AUTHINFO USER'))
+        else:
+            self.push_lit(fmt.format(''))
+
+    def handle_MODE(self, _):
+        raise Exception('MODE READER sent despite READER has been advertised')
 
     def handle_OVER(self, message_spec=None):
         return self.handle_XOVER(message_spec)
+
+
+class CapsAfterLoginNNTPv2Handler(NNTPv2Handler):
+    """A handler that allows CAPABILITIES only after login"""
+
+    def handle_CAPABILITIES(self):
+        if not self._logged_in:
+            self.push_lit('480 You must log in.')
+        else:
+            super().handle_CAPABILITIES()
+
+
+class ModeSwitchingNNTPv2Handler(NNTPv2Handler):
+    """A server that starts in transit mode"""
+
+    def __init__(self):
+        self._switched = False
+
+    def handle_CAPABILITIES(self):
+        fmt = """\
+            101 Capability list:
+            VERSION 2 3
+            IMPLEMENTATION INN 2.5.1
+            HDR
+            LIST ACTIVE ACTIVE.TIMES DISTRIB.PATS HEADERS NEWSGROUPS OVERVIEW.FMT
+            OVER
+            POST
+            {}READER
+            ."""
+        if self._switched:
+            self.push_lit(fmt.format(''))
+        else:
+            self.push_lit(fmt.format('MODE-'))
+
+    def handle_MODE(self, what):
+        assert not self._switched and what == 'reader'
+        self._switched = True
+        self.push_lit('200 Posting allowed')
 
 
 class NNTPv1v2TestsMixin:
@@ -695,6 +795,14 @@ class NNTPv1v2TestsMixin:
 
     def test_welcome(self):
         self.assertEqual(self.server.welcome, self.handler.welcome)
+
+    def test_authinfo(self):
+        if self.nntp_version == 2:
+            self.assertIn('AUTHINFO', self.server._caps)
+        self.server.login('testuser', 'testpw')
+        # if AUTHINFO is gone from _caps we also know that getcapabilities()
+        # has been called after login as it should
+        self.assertNotIn('AUTHINFO', self.server._caps)
 
     def test_date(self):
         resp, date = self.server.date()
@@ -813,7 +921,7 @@ class NNTPv1v2TestsMixin:
 
     def _check_article_body(self, lines):
         self.assertEqual(len(lines), 4)
-        self.assertEqual(lines[-1].decode('utf8'), "-- Signed by André.")
+        self.assertEqual(lines[-1].decode('utf-8'), "-- Signed by André.")
         self.assertEqual(lines[-2], b"")
         self.assertEqual(lines[-3], b".Here is a dot-starting line.")
         self.assertEqual(lines[-4], b"This is just a test article.")
@@ -904,6 +1012,26 @@ class NNTPv1v2TestsMixin:
             self.server.head("<non-existent@example.com>")
         self.assertEqual(cm.exception.response, "430 No Such Article Found")
 
+    def test_head_file(self):
+        f = io.BytesIO()
+        resp, info = self.server.head(file=f)
+        self.assertEqual(resp, "221 3000237 <45223423@example.com>")
+        art_num, message_id, lines = info
+        self.assertEqual(art_num, 3000237)
+        self.assertEqual(message_id, "<45223423@example.com>")
+        self.assertEqual(lines, [])
+        data = f.getvalue()
+        self.assertTrue(data.startswith(
+            b'From: "Demo User" <nobody@example.net>\r\n'
+            b'Subject: I am just a test article\r\n'
+            ), ascii(data))
+        self.assertFalse(data.endswith(
+            b'This is just a test article.\r\n'
+            b'.Here is a dot-starting line.\r\n'
+            b'\r\n'
+            b'-- Signed by Andr\xc3\xa9.\r\n'
+            ), ascii(data))
+
     def test_body(self):
         # BODY
         resp, info = self.server.body()
@@ -930,6 +1058,26 @@ class NNTPv1v2TestsMixin:
         with self.assertRaises(nntplib.NNTPTemporaryError) as cm:
             self.server.body("<non-existent@example.com>")
         self.assertEqual(cm.exception.response, "430 No Such Article Found")
+
+    def test_body_file(self):
+        f = io.BytesIO()
+        resp, info = self.server.body(file=f)
+        self.assertEqual(resp, "222 3000237 <45223423@example.com>")
+        art_num, message_id, lines = info
+        self.assertEqual(art_num, 3000237)
+        self.assertEqual(message_id, "<45223423@example.com>")
+        self.assertEqual(lines, [])
+        data = f.getvalue()
+        self.assertFalse(data.startswith(
+            b'From: "Demo User" <nobody@example.net>\r\n'
+            b'Subject: I am just a test article\r\n'
+            ), ascii(data))
+        self.assertTrue(data.endswith(
+            b'This is just a test article.\r\n'
+            b'.Here is a dot-starting line.\r\n'
+            b'\r\n'
+            b'-- Signed by Andr\xc3\xa9.\r\n'
+            ), ascii(data))
 
     def check_over_xover_resp(self, resp, overviews):
         self.assertTrue(resp.startswith("224 "), resp)
@@ -1012,12 +1160,12 @@ class NNTPv1v2TestsMixin:
         self.assertEqual(resp, success_resp)
         # With an iterable of terminated lines
         def iterlines(b):
-            return iter(b.splitlines(True))
+            return iter(b.splitlines(keepends=True))
         resp = self._check_post_ihave_sub(func, *args, file_factory=iterlines)
         self.assertEqual(resp, success_resp)
         # With an iterable of non-terminated lines
         def iterlines(b):
-            return iter(b.splitlines(False))
+            return iter(b.splitlines(keepends=False))
         resp = self._check_post_ihave_sub(func, *args, file_factory=iterlines)
         self.assertEqual(resp, success_resp)
 
@@ -1036,6 +1184,11 @@ class NNTPv1v2TestsMixin:
             self.server.ihave("<another.message.id>", self.sample_post)
         self.assertEqual(cm.exception.response,
                          "435 Article not wanted")
+
+    def test_too_long_lines(self):
+        dt = datetime.datetime(2010, 1, 1, 9, 0, 0)
+        self.assertRaises(nntplib.NNTPDataError,
+                          self.server.newnews, "comp.lang.python", dt)
 
 
 class NNTPv1Tests(NNTPv1v2TestsMixin, MockedNNTPTestsMixin, unittest.TestCase):
@@ -1072,6 +1225,30 @@ class NNTPv2Tests(NNTPv1v2TestsMixin, MockedNNTPTestsMixin, unittest.TestCase):
             })
         self.assertEqual(self.server.nntp_version, 3)
         self.assertEqual(self.server.nntp_implementation, 'INN 2.5.1')
+
+
+class CapsAfterLoginNNTPv2Tests(MockedNNTPTestsMixin, unittest.TestCase):
+    """Tests a probably NNTP v2 server with capabilities only after login."""
+
+    nntp_version = 2
+    handler_class = CapsAfterLoginNNTPv2Handler
+
+    def test_caps_only_after_login(self):
+        self.assertEqual(self.server._caps, {})
+        self.server.login('testuser', 'testpw')
+        self.assertIn('VERSION', self.server._caps)
+
+
+class SendReaderNNTPv2Tests(MockedNNTPWithReaderModeMixin,
+        unittest.TestCase):
+    """Same tests as for v2 but we tell NTTP to send MODE READER to a server
+    that isn't in READER mode by default."""
+
+    nntp_version = 2
+    handler_class = ModeSwitchingNNTPv2Handler
+
+    def test_we_are_in_reader_mode_after_connect(self):
+        self.assertIn('READER', self.server._caps)
 
 
 class MiscTests(unittest.TestCase):
@@ -1231,11 +1408,13 @@ class MiscTests(unittest.TestCase):
         gives(2000, 6, 23, "000623", "000000")
         gives(2010, 6, 5, "100605", "000000")
 
+    @unittest.skipUnless(ssl, 'requires SSL support')
+    def test_ssl_support(self):
+        self.assertTrue(hasattr(nntplib, 'NNTP_SSL'))
 
 def test_main():
-    tests = [MiscTests, NNTPv1Tests, NNTPv2Tests, NetworkedNNTPTests]
-    if _have_ssl:
-        tests.append(NetworkedNNTP_SSLTests)
+    tests = [MiscTests, NNTPv1Tests, NNTPv2Tests, CapsAfterLoginNNTPv2Tests,
+            SendReaderNNTPv2Tests, NetworkedNNTPTests, NetworkedNNTP_SSLTests]
     support.run_unittest(*tests)
 
 

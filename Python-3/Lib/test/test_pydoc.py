@@ -1,13 +1,14 @@
 import os
 import sys
 import builtins
+import contextlib
 import difflib
 import inspect
 import pydoc
 import keyword
+import pkgutil
 import re
 import string
-import subprocess
 import test.support
 import time
 import unittest
@@ -15,12 +16,11 @@ import xml.etree
 import textwrap
 from io import StringIO
 from collections import namedtuple
-from contextlib import contextmanager
-
 from test.script_helper import assert_python_ok
 from test.support import (
-    TESTFN, forget, rmtree, EnvironmentVarGuard,
-    reap_children, reap_threads, captured_output, captured_stdout, unlink
+    TESTFN, rmtree,
+    reap_children, reap_threads, captured_output, captured_stdout,
+    captured_stderr, unlink
 )
 from test import pydoc_mod
 
@@ -32,6 +32,14 @@ except ImportError:
 # Just in case sys.modules["test"] has the optional attribute __loader__.
 if hasattr(pydoc_mod, "__loader__"):
     del pydoc_mod.__loader__
+
+if test.support.HAVE_DOCSTRINGS:
+    expected_data_docstrings = (
+        'dictionary for instance variables (if defined)',
+        'list of weak references to the object (if defined)',
+        ) * 2
+else:
+    expected_data_docstrings = ('', '', '', '')
 
 expected_text_pattern = """
 NAME
@@ -53,20 +61,16 @@ CLASSES
      |  ----------------------------------------------------------------------
      |  Data descriptors defined here:
      |\x20\x20
-     |  __dict__
-     |      dictionary for instance variables (if defined)
+     |  __dict__%s
      |\x20\x20
-     |  __weakref__
-     |      list of weak references to the object (if defined)
+     |  __weakref__%s
 \x20\x20\x20\x20
     class B(builtins.object)
      |  Data descriptors defined here:
      |\x20\x20
-     |  __dict__
-     |      dictionary for instance variables (if defined)
+     |  __dict__%s
      |\x20\x20
-     |  __weakref__
-     |      list of weak references to the object (if defined)
+     |  __weakref__%s
      |\x20\x20
      |  ----------------------------------------------------------------------
      |  Data and other attributes defined here:
@@ -97,6 +101,9 @@ CREDITS
 FILE
     %s
 """.strip()
+
+expected_text_data_docstrings = tuple('\n     |      ' + s if s else ''
+                                      for s in expected_data_docstrings)
 
 expected_html_pattern = """
 <table width="100%%" cellspacing=0 cellpadding=2 border=0 summary="heading">
@@ -137,10 +144,10 @@ expected_html_pattern = """
 <hr>
 Data descriptors defined here:<br>
 <dl><dt><strong>__dict__</strong></dt>
-<dd><tt>dictionary&nbsp;for&nbsp;instance&nbsp;variables&nbsp;(if&nbsp;defined)</tt></dd>
+<dd><tt>%s</tt></dd>
 </dl>
 <dl><dt><strong>__weakref__</strong></dt>
-<dd><tt>list&nbsp;of&nbsp;weak&nbsp;references&nbsp;to&nbsp;the&nbsp;object&nbsp;(if&nbsp;defined)</tt></dd>
+<dd><tt>%s</tt></dd>
 </dl>
 </td></tr></table> <p>
 <table width="100%%" cellspacing=0 cellpadding=2 border=0 summary="section">
@@ -151,10 +158,10 @@ Data descriptors defined here:<br>
 <tr><td bgcolor="#ffc8d8"><tt>&nbsp;&nbsp;&nbsp;</tt></td><td>&nbsp;</td>
 <td width="100%%">Data descriptors defined here:<br>
 <dl><dt><strong>__dict__</strong></dt>
-<dd><tt>dictionary&nbsp;for&nbsp;instance&nbsp;variables&nbsp;(if&nbsp;defined)</tt></dd>
+<dd><tt>%s</tt></dd>
 </dl>
 <dl><dt><strong>__weakref__</strong></dt>
-<dd><tt>list&nbsp;of&nbsp;weak&nbsp;references&nbsp;to&nbsp;the&nbsp;object&nbsp;(if&nbsp;defined)</tt></dd>
+<dd><tt>%s</tt></dd>
 </dl>
 <hr>
 Data and other attributes defined here:<br>
@@ -196,12 +203,14 @@ war</tt></dd></dl>
 <td width="100%%">Nobody</td></tr></table>
 """.strip() # ' <- emacs turd
 
+expected_html_data_docstrings = tuple(s.replace(' ', '&nbsp;')
+                                      for s in expected_data_docstrings)
 
 # output pattern for missing module
 missing_pattern = "no Python documentation found for '%s'"
 
 # output pattern for module with bad imports
-badimport_pattern = "problem in %s - ImportError: No module named %s"
+badimport_pattern = "problem in %s - ImportError: No module named %r"
 
 def run_pydoc(module_name, *args, **env):
     """
@@ -209,7 +218,8 @@ def run_pydoc(module_name, *args, **env):
     output of pydoc.
     """
     args = args + (module_name,)
-    rc, out, err = assert_python_ok(pydoc.__file__, *args, **env)
+    # do not write bytecode files to avoid caching errors
+    rc, out, err = assert_python_ok('-B', pydoc.__file__, *args, **env)
     return out.strip()
 
 def get_pydoc_html(module):
@@ -238,8 +248,8 @@ def get_pydoc_text(module):
 def print_diffs(text1, text2):
     "Prints unified diffs for two texts"
     # XXX now obsolete, use unittest built-in support
-    lines1 = text1.splitlines(True)
-    lines2 = text2.splitlines(True)
+    lines1 = text1.splitlines(keepends=True)
+    lines2 = text2.splitlines(keepends=True)
     diffs = difflib.unified_diff(lines1, lines2, n=0, fromfile='expected',
                                  tofile='got')
     print('\n' + ''.join(diffs))
@@ -252,10 +262,35 @@ def get_html_title(text):
     return title
 
 
+class PydocBaseTest(unittest.TestCase):
+
+    def _restricted_walk_packages(self, walk_packages, path=None):
+        """
+        A version of pkgutil.walk_packages() that will restrict itself to
+        a given path.
+        """
+        default_path = path or [os.path.dirname(__file__)]
+        def wrapper(path=None, prefix='', onerror=None):
+            return walk_packages(path or default_path, prefix, onerror)
+        return wrapper
+
+    @contextlib.contextmanager
+    def restrict_walk_packages(self, path=None):
+        walk_packages = pkgutil.walk_packages
+        pkgutil.walk_packages = self._restricted_walk_packages(walk_packages,
+                                                               path)
+        try:
+            yield
+        finally:
+            pkgutil.walk_packages = walk_packages
+
+
 class PydocDocTest(unittest.TestCase):
 
     @unittest.skipIf(sys.flags.optimize >= 2,
                      "Docstrings are omitted with -O2 and above")
+    @unittest.skipIf(hasattr(sys, 'gettrace') and sys.gettrace(),
+                     'trace function introduces __locals__ unexpectedly')
     def test_html_doc(self):
         result, doc_loc = get_pydoc_html(pydoc_mod)
         mod_file = inspect.getabsfile(pydoc_mod)
@@ -264,17 +299,23 @@ class PydocDocTest(unittest.TestCase):
             mod_url = nturl2path.pathname2url(mod_file)
         else:
             mod_url = mod_file
-        expected_html = expected_html_pattern % (mod_url, mod_file, doc_loc)
+        expected_html = expected_html_pattern % (
+                        (mod_url, mod_file, doc_loc) +
+                        expected_html_data_docstrings)
         if result != expected_html:
             print_diffs(expected_html, result)
             self.fail("outputs are not equal, see diff above")
 
     @unittest.skipIf(sys.flags.optimize >= 2,
                      "Docstrings are omitted with -O2 and above")
+    @unittest.skipIf(hasattr(sys, 'gettrace') and sys.gettrace(),
+                     'trace function introduces __locals__ unexpectedly')
     def test_text_doc(self):
         result, doc_loc = get_pydoc_text(pydoc_mod)
-        expected_text = expected_text_pattern % \
-                        (doc_loc, inspect.getabsfile(pydoc_mod))
+        expected_text = expected_text_pattern % (
+                        (doc_loc,) +
+                        expected_text_data_docstrings +
+                        (inspect.getabsfile(pydoc_mod),))
         if result != expected_text:
             print_diffs(expected_text, result)
             self.fail("outputs are not equal, see diff above")
@@ -284,49 +325,23 @@ class PydocDocTest(unittest.TestCase):
         result, doc_loc = get_pydoc_text(xml.etree)
         self.assertEqual(doc_loc, "", "MODULE DOCS incorrectly includes a link")
 
+    def test_non_str_name(self):
+        # issue14638
+        # Treat illegal (non-str) name like no name
+        class A:
+            __name__ = 42
+        class B:
+            pass
+        adoc = pydoc.render_doc(A())
+        bdoc = pydoc.render_doc(B())
+        self.assertEqual(adoc.replace("A", "B"), bdoc)
+
     def test_not_here(self):
         missing_module = "test.i_am_not_here"
         result = str(run_pydoc(missing_module), 'ascii')
         expected = missing_pattern % missing_module
         self.assertEqual(expected, result,
             "documentation for missing module found")
-
-    def test_badimport(self):
-        # This tests the fix for issue 5230, where if pydoc found the module
-        # but the module had an internal import error pydoc would report no doc
-        # found.
-        modname = 'testmod_xyzzy'
-        testpairs = (
-            ('i_am_not_here', 'i_am_not_here'),
-            ('test.i_am_not_here_either', 'i_am_not_here_either'),
-            ('test.i_am_not_here.neither_am_i', 'i_am_not_here.neither_am_i'),
-            ('i_am_not_here.{}'.format(modname),
-             'i_am_not_here.{}'.format(modname)),
-            ('test.{}'.format(modname), modname),
-            )
-
-        @contextmanager
-        def newdirinpath(dir):
-            os.mkdir(dir)
-            sys.path.insert(0, dir)
-            try:
-                yield
-            finally:
-                sys.path.pop(0)
-                rmtree(dir)
-
-        with newdirinpath(TESTFN):
-            fullmodname = os.path.join(TESTFN, modname)
-            sourcefn = fullmodname + os.extsep + "py"
-            for importstring, expectedinmsg in testpairs:
-                with open(sourcefn, 'w') as f:
-                    f.write("import {}\n".format(importstring))
-                try:
-                    result = run_pydoc(modname, PYTHONPATH=TESTFN).decode("ascii")
-                finally:
-                    forget(modname)
-                expected = badimport_pattern % (modname, expectedinmsg)
-                self.assertEqual(expected, result)
 
     def test_input_strip(self):
         missing_module = " test.i_am_not_here "
@@ -349,6 +364,8 @@ class PydocDocTest(unittest.TestCase):
 
     @unittest.skipIf(sys.flags.optimize >= 2,
                      'Docstrings are omitted with -O2 and above')
+    @unittest.skipIf(hasattr(sys, 'gettrace') and sys.gettrace(),
+                     'trace function introduces __locals__ unexpectedly')
     def test_help_output_redirect(self):
         # issue 940286, if output is set in Helper, then all output from
         # Helper.help should be redirected
@@ -374,8 +391,10 @@ class PydocDocTest(unittest.TestCase):
                  captured_output('stderr') as err:
                 helper.help(module)
                 result = buf.getvalue().strip()
-                expected_text = expected_help_pattern % \
-                                (doc_loc, inspect.getabsfile(pydoc_mod))
+                expected_text = expected_help_pattern % (
+                                (doc_loc,) +
+                                expected_text_data_docstrings +
+                                (inspect.getabsfile(pydoc_mod),))
                 self.assertEqual('', output.getvalue())
                 self.assertEqual('', err.getvalue())
                 self.assertEqual(expected_text, result)
@@ -385,7 +404,7 @@ class PydocDocTest(unittest.TestCase):
     def test_namedtuple_public_underscore(self):
         NT = namedtuple('NT', ['abc', 'def'], rename=True)
         with captured_stdout() as help_io:
-            help(NT)
+            pydoc.help(NT)
         helptext = help_io.getvalue()
         self.assertIn('_1', helptext)
         self.assertIn('_replace', helptext)
@@ -401,6 +420,94 @@ class PydocDocTest(unittest.TestCase):
                 print('line 2: hi"""', file=script)
             synopsis = pydoc.synopsis(TESTFN, {})
             self.assertEqual(synopsis, 'line 1: h\xe9')
+
+    def test_allmethods(self):
+        # issue 17476: allmethods was no longer returning unbound methods.
+        # This test is a bit fragile in the face of changes to object and type,
+        # but I can't think of a better way to do it without duplicating the
+        # logic of the function under test.
+
+        class TestClass(object):
+            def method_returning_true(self):
+                return True
+
+        # What we expect to get back: everything on object...
+        expected = dict(vars(object))
+        # ...plus our unbound method...
+        expected['method_returning_true'] = TestClass.method_returning_true
+        # ...but not the non-methods on object.
+        del expected['__doc__']
+        del expected['__class__']
+        # inspect resolves descriptors on type into methods, but vars doesn't,
+        # so we need to update __subclasshook__.
+        expected['__subclasshook__'] = TestClass.__subclasshook__
+
+        methods = pydoc.allmethods(TestClass)
+        self.assertDictEqual(methods, expected)
+
+
+class PydocImportTest(PydocBaseTest):
+
+    def setUp(self):
+        self.test_dir = os.mkdir(TESTFN)
+        self.addCleanup(rmtree, TESTFN)
+
+    def test_badimport(self):
+        # This tests the fix for issue 5230, where if pydoc found the module
+        # but the module had an internal import error pydoc would report no doc
+        # found.
+        modname = 'testmod_xyzzy'
+        testpairs = (
+            ('i_am_not_here', 'i_am_not_here'),
+            ('test.i_am_not_here_either', 'test.i_am_not_here_either'),
+            ('test.i_am_not_here.neither_am_i', 'test.i_am_not_here'),
+            ('i_am_not_here.{}'.format(modname), 'i_am_not_here'),
+            ('test.{}'.format(modname), 'test.{}'.format(modname)),
+            )
+
+        sourcefn = os.path.join(TESTFN, modname) + os.extsep + "py"
+        for importstring, expectedinmsg in testpairs:
+            with open(sourcefn, 'w') as f:
+                f.write("import {}\n".format(importstring))
+            result = run_pydoc(modname, PYTHONPATH=TESTFN).decode("ascii")
+            expected = badimport_pattern % (modname, expectedinmsg)
+            self.assertEqual(expected, result)
+
+    def test_apropos_with_bad_package(self):
+        # Issue 7425 - pydoc -k failed when bad package on path
+        pkgdir = os.path.join(TESTFN, "syntaxerr")
+        os.mkdir(pkgdir)
+        badsyntax = os.path.join(pkgdir, "__init__") + os.extsep + "py"
+        with open(badsyntax, 'w') as f:
+            f.write("invalid python syntax = $1\n")
+        with self.restrict_walk_packages(path=[TESTFN]):
+            with captured_stdout() as out:
+                with captured_stderr() as err:
+                    pydoc.apropos('xyzzy')
+            # No result, no error
+            self.assertEqual(out.getvalue(), '')
+            self.assertEqual(err.getvalue(), '')
+            # The package name is still matched
+            with captured_stdout() as out:
+                with captured_stderr() as err:
+                    pydoc.apropos('syntaxerr')
+            self.assertEqual(out.getvalue().strip(), 'syntaxerr')
+            self.assertEqual(err.getvalue(), '')
+
+    def test_apropos_with_unreadable_dir(self):
+        # Issue 7367 - pydoc -k failed when unreadable dir on path
+        self.unreadable_dir = os.path.join(TESTFN, "unreadable")
+        os.mkdir(self.unreadable_dir, 0)
+        self.addCleanup(os.rmdir, self.unreadable_dir)
+        # Note, on Windows the directory appears to be still
+        #   readable so this is not really testing the issue there
+        with self.restrict_walk_packages(path=[TESTFN]):
+            with captured_stdout() as out:
+                with captured_stderr() as err:
+                    pydoc.apropos('SOMEKEY')
+        # No result, no error
+        self.assertEqual(out.getvalue(), '')
+        self.assertEqual(err.getvalue(), '')
 
 
 class TestDescriptions(unittest.TestCase):
@@ -450,6 +557,8 @@ class PydocServerTest(unittest.TestCase):
             return text
 
         serverthread = pydoc._start_server(my_url_handler, port=0)
+        self.assertIn('localhost', serverthread.docserver.address)
+
         starttime = time.time()
         timeout = 1  #seconds
 
@@ -462,7 +571,7 @@ class PydocServerTest(unittest.TestCase):
         self.assertEqual(serverthread.error, None)
 
 
-class PydocUrlHandlerTest(unittest.TestCase):
+class PydocUrlHandlerTest(PydocBaseTest):
     """Tests for pydoc._url_handler"""
 
     def test_content_type_err(self):
@@ -489,17 +598,18 @@ class PydocUrlHandlerTest(unittest.TestCase):
             ("getfile?key=foobar", "Pydoc: Error - getfile?key=foobar"),
             ]
 
-        for url, title in requests:
+        with self.restrict_walk_packages():
+            for url, title in requests:
+                text = pydoc._url_handler(url, "text/html")
+                result = get_html_title(text)
+                self.assertEqual(result, title, text)
+
+            path = string.__file__
+            title = "Pydoc: getfile " + path
+            url = "getfile?key=" + path
             text = pydoc._url_handler(url, "text/html")
             result = get_html_title(text)
             self.assertEqual(result, title)
-
-        path = string.__file__
-        title = "Pydoc: getfile " + path
-        url = "getfile?key=" + path
-        text = pydoc._url_handler(url, "text/html")
-        result = get_html_title(text)
-        self.assertEqual(result, title)
 
 
 class TestHelper(unittest.TestCase):
@@ -511,6 +621,7 @@ class TestHelper(unittest.TestCase):
 def test_main():
     try:
         test.support.run_unittest(PydocDocTest,
+                                  PydocImportTest,
                                   TestDescriptions,
                                   PydocServerTest,
                                   PydocUrlHandlerTest,

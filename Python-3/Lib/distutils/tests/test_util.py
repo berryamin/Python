@@ -8,11 +8,13 @@ from test.support import run_unittest
 from distutils.errors import DistutilsPlatformError, DistutilsByteCompileError
 from distutils.util import (get_platform, convert_path, change_root,
                             check_environ, split_quoted, strtobool,
-                            rfc822_escape, byte_compile)
+                            rfc822_escape, byte_compile,
+                            grok_environment_error)
 from distutils import util # used to patch _environ_checked
 from distutils.sysconfig import get_config_vars
 from distutils import sysconfig
 from distutils.tests import support
+import _osx_support
 
 class UtilTestCase(support.EnvironGuard, unittest.TestCase):
 
@@ -92,6 +94,7 @@ class UtilTestCase(support.EnvironGuard, unittest.TestCase):
                    ('Darwin Kernel Version 8.11.1: '
                     'Wed Oct 10 18:23:28 PDT 2007; '
                     'root:xnu-792.25.20~1/RELEASE_I386'), 'i386'))
+        _osx_support._remove_original_values(get_config_vars())
         get_config_vars()['MACOSX_DEPLOYMENT_TARGET'] = '10.3'
 
         get_config_vars()['CFLAGS'] = ('-fno-strict-aliasing -DNDEBUG -g '
@@ -105,6 +108,7 @@ class UtilTestCase(support.EnvironGuard, unittest.TestCase):
             sys.maxsize = cursize
 
         # macbook with fat binaries (fat, universal or fat64)
+        _osx_support._remove_original_values(get_config_vars())
         get_config_vars()['MACOSX_DEPLOYMENT_TARGET'] = '10.4'
         get_config_vars()['CFLAGS'] = ('-arch ppc -arch i386 -isysroot '
                                        '/Developer/SDKs/MacOSX10.4u.sdk  '
@@ -113,10 +117,12 @@ class UtilTestCase(support.EnvironGuard, unittest.TestCase):
 
         self.assertEqual(get_platform(), 'macosx-10.4-fat')
 
+        _osx_support._remove_original_values(get_config_vars())
         os.environ['MACOSX_DEPLOYMENT_TARGET'] = '10.1'
         self.assertEqual(get_platform(), 'macosx-10.4-fat')
 
 
+        _osx_support._remove_original_values(get_config_vars())
         get_config_vars()['CFLAGS'] = ('-arch x86_64 -arch i386 -isysroot '
                                        '/Developer/SDKs/MacOSX10.4u.sdk  '
                                        '-fno-strict-aliasing -fno-common '
@@ -124,18 +130,21 @@ class UtilTestCase(support.EnvironGuard, unittest.TestCase):
 
         self.assertEqual(get_platform(), 'macosx-10.4-intel')
 
+        _osx_support._remove_original_values(get_config_vars())
         get_config_vars()['CFLAGS'] = ('-arch x86_64 -arch ppc -arch i386 -isysroot '
                                        '/Developer/SDKs/MacOSX10.4u.sdk  '
                                        '-fno-strict-aliasing -fno-common '
                                        '-dynamic -DNDEBUG -g -O3')
         self.assertEqual(get_platform(), 'macosx-10.4-fat3')
 
+        _osx_support._remove_original_values(get_config_vars())
         get_config_vars()['CFLAGS'] = ('-arch ppc64 -arch x86_64 -arch ppc -arch i386 -isysroot '
                                        '/Developer/SDKs/MacOSX10.4u.sdk  '
                                        '-fno-strict-aliasing -fno-common '
                                        '-dynamic -DNDEBUG -g -O3')
         self.assertEqual(get_platform(), 'macosx-10.4-universal')
 
+        _osx_support._remove_original_values(get_config_vars())
         get_config_vars()['CFLAGS'] = ('-arch x86_64 -arch ppc64 -isysroot '
                                        '/Developer/SDKs/MacOSX10.4u.sdk  '
                                        '-fno-strict-aliasing -fno-common '
@@ -144,6 +153,7 @@ class UtilTestCase(support.EnvironGuard, unittest.TestCase):
         self.assertEqual(get_platform(), 'macosx-10.4-fat64')
 
         for arch in ('ppc', 'i386', 'x86_64', 'ppc64'):
+            _osx_support._remove_original_values(get_config_vars())
             get_config_vars()['CFLAGS'] = ('-arch %s -isysroot '
                                            '/Developer/SDKs/MacOSX10.4u.sdk  '
                                            '-fno-strict-aliasing -fno-common '
@@ -257,7 +267,7 @@ class UtilTestCase(support.EnvironGuard, unittest.TestCase):
             self.assertTrue(strtobool(y))
 
         for n in no:
-            self.assertTrue(not strtobool(n))
+            self.assertFalse(strtobool(n))
 
     def test_rfc822_escape(self):
         header = 'I am a\npoor\nlonesome\nheader\n'
@@ -275,6 +285,13 @@ class UtilTestCase(support.EnvironGuard, unittest.TestCase):
             self.assertRaises(DistutilsByteCompileError, byte_compile, [])
         finally:
             sys.dont_write_bytecode = old_dont_write_bytecode
+
+    def test_grok_environment_error(self):
+        # test obsolete function to ensure backward compat (#4931)
+        exc = IOError("Unable to find batch file")
+        msg = grok_environment_error(exc)
+        self.assertEqual(msg, "error: Unable to find batch file")
+
 
 def test_suite():
     return unittest.makeSuite(UtilTestCase)

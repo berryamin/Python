@@ -5,9 +5,20 @@ import sys
 import unittest
 import pickle
 import weakref
+import errno
 
-from test.support import (TESTFN, unlink, run_unittest, captured_output,
-                          gc_collect, cpython_only)
+from test.support import (TESTFN, captured_output, check_impl_detail,
+                          check_warnings, cpython_only, gc_collect,
+                          no_tracing, run_unittest, unlink)
+
+class NaiveException(Exception):
+    def __init__(self, x):
+        self.x = x
+
+class SlottedNaiveException(Exception):
+    __slots__ = ('x',)
+    def __init__(self, x):
+        self.x = x
 
 # XXX This is not really enough, each *operation* should be tested!
 
@@ -37,7 +48,7 @@ class ExceptionTests(unittest.TestCase):
         try:
             try:
                 import marshal
-                marshal.loads('')
+                marshal.loads(b'')
             except EOFError:
                 pass
         finally:
@@ -45,8 +56,8 @@ class ExceptionTests(unittest.TestCase):
             fp.close()
             unlink(TESTFN)
 
-        self.raise_catch(IOError, "IOError")
-        self.assertRaises(IOError, open, 'this file does not exist', 'r')
+        self.raise_catch(OSError, "OSError")
+        self.assertRaises(OSError, open, 'this file does not exist', 'r')
 
         self.raise_catch(ImportError, "ImportError")
         self.assertRaises(ImportError, __import__, "undefined_module")
@@ -137,6 +148,19 @@ class ExceptionTests(unittest.TestCase):
         ckmsg(s, "'continue' not properly in loop")
         ckmsg("continue\n", "'continue' not properly in loop")
 
+    def testSyntaxErrorOffset(self):
+        def check(src, lineno, offset):
+            with self.assertRaises(SyntaxError) as cm:
+                compile(src, '<fragment>', 'exec')
+            self.assertEqual(cm.exception.lineno, lineno)
+            self.assertEqual(cm.exception.offset, offset)
+
+        check('def fact(x):\n\treturn x!\n', 2, 10)
+        check('1 +\n', 1, 4)
+        check('def spam():\n  print(1)\n print(2)', 3, 10)
+        check('Python = "Python" +', 1, 20)
+        check('Python = "\u1e54\xfd\u0163\u0125\xf2\xf1" +', 1, 20)
+
     @cpython_only
     def testSettingException(self):
         # test that setting an exception at the C level works even if the
@@ -191,11 +215,35 @@ class ExceptionTests(unittest.TestCase):
         except NameError:
             pass
         else:
-            self.assertEqual(str(WindowsError(1001)), "1001")
-            self.assertEqual(str(WindowsError(1001, "message")),
-                             "[Error 1001] message")
-            self.assertEqual(WindowsError(1001, "message").errno, 22)
-            self.assertEqual(WindowsError(1001, "message").winerror, 1001)
+            self.assertIs(WindowsError, OSError)
+            self.assertEqual(str(OSError(1001)), "1001")
+            self.assertEqual(str(OSError(1001, "message")),
+                             "[Errno 1001] message")
+            # POSIX errno (9 aka EBADF) is untranslated
+            w = OSError(9, 'foo', 'bar')
+            self.assertEqual(w.errno, 9)
+            self.assertEqual(w.winerror, None)
+            self.assertEqual(str(w), "[Errno 9] foo: 'bar'")
+            # ERROR_PATH_NOT_FOUND (win error 3) becomes ENOENT (2)
+            w = OSError(0, 'foo', 'bar', 3)
+            self.assertEqual(w.errno, 2)
+            self.assertEqual(w.winerror, 3)
+            self.assertEqual(w.strerror, 'foo')
+            self.assertEqual(w.filename, 'bar')
+            self.assertEqual(str(w), "[WinError 3] foo: 'bar'")
+            # Unknown win error becomes EINVAL (22)
+            w = OSError(0, 'foo', None, 1001)
+            self.assertEqual(w.errno, 22)
+            self.assertEqual(w.winerror, 1001)
+            self.assertEqual(w.strerror, 'foo')
+            self.assertEqual(w.filename, None)
+            self.assertEqual(str(w), "[WinError 1001] foo")
+            # Non-numeric "errno"
+            w = OSError('bar', 'foo')
+            self.assertEqual(w.errno, 'bar')
+            self.assertEqual(w.winerror, None)
+            self.assertEqual(w.strerror, 'foo')
+            self.assertEqual(w.filename, None)
 
     def testAttributes(self):
         # test that exception attributes are happy
@@ -271,13 +319,18 @@ class ExceptionTests(unittest.TestCase):
                 {'args' : ('\u3042', 0, 1, 'ouch'),
                  'object' : '\u3042', 'reason' : 'ouch',
                  'start' : 0, 'end' : 1}),
+            (NaiveException, ('foo',),
+                {'args': ('foo',), 'x': 'foo'}),
+            (SlottedNaiveException, ('foo',),
+                {'args': ('foo',), 'x': 'foo'}),
         ]
         try:
+            # More tests are in test_WindowsError
             exceptionList.append(
                 (WindowsError, (1, 'strErrorStr', 'filenameStr'),
                     {'args' : (1, 'strErrorStr'),
-                     'strerror' : 'strErrorStr', 'winerror' : 1,
-                     'errno' : 22, 'filename' : 'filenameStr'})
+                     'strerror' : 'strErrorStr', 'winerror' : None,
+                     'errno' : 1, 'filename' : 'filenameStr'})
             )
         except NameError:
             pass
@@ -290,7 +343,8 @@ class ExceptionTests(unittest.TestCase):
                 raise
             else:
                 # Verify module name
-                self.assertEqual(type(e).__module__, 'builtins')
+                if not type(e).__name__.endswith('NaiveException'):
+                    self.assertEqual(type(e).__module__, 'builtins')
                 # Verify no ref leaks in Exc_str()
                 s = str(e)
                 for checkArgName in expected:
@@ -361,19 +415,37 @@ class ExceptionTests(unittest.TestCase):
 
     def testChainingAttrs(self):
         e = Exception()
-        self.assertEqual(e.__context__, None)
-        self.assertEqual(e.__cause__, None)
+        self.assertIsNone(e.__context__)
+        self.assertIsNone(e.__cause__)
 
         e = TypeError()
-        self.assertEqual(e.__context__, None)
-        self.assertEqual(e.__cause__, None)
+        self.assertIsNone(e.__context__)
+        self.assertIsNone(e.__cause__)
 
         class MyException(EnvironmentError):
             pass
 
         e = MyException()
-        self.assertEqual(e.__context__, None)
-        self.assertEqual(e.__cause__, None)
+        self.assertIsNone(e.__context__)
+        self.assertIsNone(e.__cause__)
+
+    def testChainingDescriptors(self):
+        try:
+            raise Exception()
+        except Exception as exc:
+            e = exc
+
+        self.assertIsNone(e.__context__)
+        self.assertIsNone(e.__cause__)
+        self.assertFalse(e.__suppress_context__)
+
+        e.__context__ = NameError()
+        e.__cause__ = None
+        self.assertIsInstance(e.__context__, NameError)
+        self.assertIsNone(e.__cause__)
+        self.assertTrue(e.__suppress_context__)
+        e.__suppress_context__ = False
+        self.assertFalse(e.__suppress_context__)
 
     def testKeywordArgs(self):
         # test that builtin exception don't take keyword args,
@@ -388,6 +460,7 @@ class ExceptionTests(unittest.TestCase):
         x = DerivedException(fancy_arg=42)
         self.assertEqual(x.fancy_arg, 42)
 
+    @no_tracing
     def testInfiniteRecursion(self):
         def f():
             return f()
@@ -492,6 +565,9 @@ class ExceptionTests(unittest.TestCase):
             e.__context__ = None
             obj = None
             obj = wr()
+            # guarantee no ref cycles on CPython (don't gc_collect)
+            if check_impl_detail(cpython=False):
+                gc_collect()
             self.assertTrue(obj is None, "%s" % obj)
 
         # Some complicated construct
@@ -508,6 +584,8 @@ class ExceptionTests(unittest.TestCase):
             except MyException:
                 pass
         obj = None
+        if check_impl_detail(cpython=False):
+            gc_collect()
         obj = wr()
         self.assertTrue(obj is None, "%s" % obj)
 
@@ -522,6 +600,8 @@ class ExceptionTests(unittest.TestCase):
         with Context():
             inner_raising_func()
         obj = None
+        if check_impl_detail(cpython=False):
+            gc_collect()
         obj = wr()
         self.assertTrue(obj is None, "%s" % obj)
 
@@ -607,6 +687,68 @@ class ExceptionTests(unittest.TestCase):
         gc_collect()
         self.assertEqual(sys.exc_info(), (None, None, None))
 
+    def _check_generator_cleanup_exc_state(self, testfunc):
+        # Issue #12791: exception state is cleaned up as soon as a generator
+        # is closed (reference cycles are broken).
+        class MyException(Exception):
+            def __init__(self, obj):
+                self.obj = obj
+        class MyObj:
+            pass
+
+        def raising_gen():
+            try:
+                raise MyException(obj)
+            except MyException:
+                yield
+
+        obj = MyObj()
+        wr = weakref.ref(obj)
+        g = raising_gen()
+        next(g)
+        testfunc(g)
+        g = obj = None
+        obj = wr()
+        self.assertIs(obj, None)
+
+    def test_generator_throw_cleanup_exc_state(self):
+        def do_throw(g):
+            try:
+                g.throw(RuntimeError())
+            except RuntimeError:
+                pass
+        self._check_generator_cleanup_exc_state(do_throw)
+
+    def test_generator_close_cleanup_exc_state(self):
+        def do_close(g):
+            g.close()
+        self._check_generator_cleanup_exc_state(do_close)
+
+    def test_generator_del_cleanup_exc_state(self):
+        def do_del(g):
+            g = None
+        self._check_generator_cleanup_exc_state(do_del)
+
+    def test_generator_next_cleanup_exc_state(self):
+        def do_next(g):
+            try:
+                next(g)
+            except StopIteration:
+                pass
+            else:
+                self.fail("should have raised StopIteration")
+        self._check_generator_cleanup_exc_state(do_next)
+
+    def test_generator_send_cleanup_exc_state(self):
+        def do_send(g):
+            try:
+                g.send(None)
+            except StopIteration:
+                pass
+            else:
+                self.fail("should have raised StopIteration")
+        self._check_generator_cleanup_exc_state(do_send)
+
     def test_3114(self):
         # Bug #3114: in its destructor, MyObject retrieves a pointer to
         # obsolete and/or deallocated objects.
@@ -658,6 +800,7 @@ class ExceptionTests(unittest.TestCase):
         u.start = 1000
         self.assertEqual(str(u), "can't translate characters in position 1000-4: 965230951443685724997")
 
+    @no_tracing
     def test_badisinstance(self):
         # Bug #2542: if issubclass(e, MyException) raises an exception,
         # it should be ignored
@@ -689,6 +832,7 @@ class ExceptionTests(unittest.TestCase):
         self.assertIn("maximum recursion depth exceeded", str(v))
 
 
+    @cpython_only
     def test_MemoryError(self):
         # PyErr_NoMemory always raises the same exception instance.
         # Check that the traceback is not doubled.
@@ -747,6 +891,7 @@ class ExceptionTests(unittest.TestCase):
         self.assertEqual(error5.a, 1)
         self.assertEqual(error5.__doc__, "")
 
+    @cpython_only
     def test_memory_error_cleanup(self):
         # Issue #5437: preallocated MemoryError instances should not keep
         # traceback objects alive.
@@ -768,6 +913,7 @@ class ExceptionTests(unittest.TestCase):
             self.fail("MemoryError not raised")
         self.assertEqual(wr(), None)
 
+    @no_tracing
     def test_recursion_error_cleanup(self):
         # Same test as above, but with "recursion exceeded" errors
         class C:
@@ -787,8 +933,43 @@ class ExceptionTests(unittest.TestCase):
             self.fail("RuntimeError not raised")
         self.assertEqual(wr(), None)
 
+    def test_errno_ENOTDIR(self):
+        # Issue #12802: "not a directory" errors are ENOTDIR even on Windows
+        with self.assertRaises(OSError) as cm:
+            os.listdir(__file__)
+        self.assertEqual(cm.exception.errno, errno.ENOTDIR, cm.exception)
+
+
+class ImportErrorTests(unittest.TestCase):
+
+    def test_attributes(self):
+        # Setting 'name' and 'path' should not be a problem.
+        exc = ImportError('test')
+        self.assertIsNone(exc.name)
+        self.assertIsNone(exc.path)
+
+        exc = ImportError('test', name='somemodule')
+        self.assertEqual(exc.name, 'somemodule')
+        self.assertIsNone(exc.path)
+
+        exc = ImportError('test', path='somepath')
+        self.assertEqual(exc.path, 'somepath')
+        self.assertIsNone(exc.name)
+
+        exc = ImportError('test', path='somepath', name='somename')
+        self.assertEqual(exc.name, 'somename')
+        self.assertEqual(exc.path, 'somepath')
+
+    def test_non_str_argument(self):
+        # Issue #15778
+        with check_warnings(('', BytesWarning), quiet=True):
+            arg = b'abc'
+            exc = ImportError(arg)
+            self.assertEqual(str(arg), str(exc))
+
+
 def test_main():
-    run_unittest(ExceptionTests)
+    run_unittest(ExceptionTests, ImportErrorTests)
 
 if __name__ == '__main__':
     unittest.main()

@@ -1,3 +1,4 @@
+
 /* Python interpreter top-level routines, including init/exit */
 
 #include "Python.h"
@@ -14,12 +15,6 @@
 #include "ast.h"
 #include "marshal.h"
 #include "osdefs.h"
-
-#ifdef __QNXNTO__
-#include <sys/trace.h>
-int enable_kernel_tracing;
-extern int python_import_arena_size_g;   /* pyarena.c */
-#endif
 
 #ifdef HAVE_SIGNAL_H
 #include <signal.h>
@@ -57,7 +52,7 @@ extern wchar_t *Py_GetPath(void);
 extern grammar _PyParser_Grammar; /* From graminit.c */
 
 /* Forward */
-static void initmain(void);
+static void initmain(PyInterpreterState *interp);
 static int initfsencoding(PyInterpreterState *interp);
 static void initsite(void);
 static int initstdio(void);
@@ -67,14 +62,17 @@ static PyObject *run_mod(mod_ty, const char *, PyObject *, PyObject *,
 static PyObject *run_pyc_file(FILE *, const char *, PyObject *, PyObject *,
                               PyCompilerFlags *);
 static void err_input(perrdetail *);
+static void err_free(perrdetail *);
 static void initsigs(void);
 static void call_py_exitfuncs(void);
 static void wait_for_thread_shutdown(void);
 static void call_ll_exitfuncs(void);
-extern void _PyUnicode_Init(void);
+extern int _PyUnicode_Init(void);
 extern void _PyUnicode_Fini(void);
 extern int _PyLong_Init(void);
 extern void PyLong_Fini(void);
+extern int _PyFaulthandler_Init(void);
+extern void _PyFaulthandler_Fini(void);
 
 #ifdef WITH_THREAD
 extern void _PyGILState_Init(PyInterpreterState *, PyThreadState *);
@@ -94,8 +92,13 @@ int Py_FrozenFlag; /* Needed by getpath.c */
 int Py_IgnoreEnvironmentFlag; /* e.g. PYTHONPATH, PYTHONHOME */
 int Py_NoUserSiteDirectory = 0; /* for -s and site.py */
 int Py_UnbufferedStdioFlag = 0; /* Unbuffered binary std{in,out,err} */
+int Py_HashRandomizationFlag = 0; /* for -R and PYTHONHASHSEED */
 
 PyThreadState *_Py_Finalizing = NULL;
+
+/* Hack to force loading of object files */
+int (*_PyOS_mystrnicmp_hack)(const char *, const char *, Py_ssize_t) = \
+    PyOS_mystrnicmp; /* Python/pystrcmp.o */
 
 /* PyModule_GetWarningsModule is no longer necessary as of 2.6
 since _warnings is builtin.  This API should not be used. */
@@ -143,12 +146,13 @@ get_codec_name(const char *encoding)
 {
     char *name_utf8, *name_str;
     PyObject *codec, *name = NULL;
+    _Py_IDENTIFIER(name);
 
     codec = _PyCodec_Lookup(encoding);
     if (!codec)
         goto error;
 
-    name = PyObject_GetAttrString(codec, "name");
+    name = _PyObject_GetAttrId(codec, &PyId_name);
     Py_CLEAR(codec);
     if (!name)
         goto error;
@@ -170,21 +174,79 @@ error:
     return NULL;
 }
 
-#if defined(HAVE_LANGINFO_H) && defined(CODESET)
 static char*
-get_codeset(void)
+get_locale_encoding(void)
 {
+#ifdef MS_WINDOWS
+    char codepage[100];
+    PyOS_snprintf(codepage, sizeof(codepage), "cp%d", GetACP());
+    return get_codec_name(codepage);
+#elif defined(HAVE_LANGINFO_H) && defined(CODESET)
     char* codeset = nl_langinfo(CODESET);
     if (!codeset || codeset[0] == '\0') {
         PyErr_SetString(PyExc_ValueError, "CODESET is not set or empty");
         return NULL;
     }
     return get_codec_name(codeset);
-}
+#else
+    PyErr_SetNone(PyExc_NotImplementedError);
+    return NULL;
 #endif
+}
+
+static void
+import_init(PyInterpreterState *interp, PyObject *sysmod)
+{
+    PyObject *importlib;
+    PyObject *impmod;
+    PyObject *sys_modules;
+    PyObject *value;
+
+    /* Import _importlib through its frozen version, _frozen_importlib. */
+    if (PyImport_ImportFrozenModule("_frozen_importlib") <= 0) {
+        Py_FatalError("Py_Initialize: can't import _frozen_importlib");
+    }
+    else if (Py_VerboseFlag) {
+        PySys_FormatStderr("import _frozen_importlib # frozen\n");
+    }
+    importlib = PyImport_AddModule("_frozen_importlib");
+    if (importlib == NULL) {
+        Py_FatalError("Py_Initialize: couldn't get _frozen_importlib from "
+                      "sys.modules");
+    }
+    interp->importlib = importlib;
+    Py_INCREF(interp->importlib);
+
+    /* Install _importlib as __import__ */
+    impmod = PyInit_imp();
+    if (impmod == NULL) {
+        Py_FatalError("Py_Initialize: can't import imp");
+    }
+    else if (Py_VerboseFlag) {
+        PySys_FormatStderr("import imp # builtin\n");
+    }
+    sys_modules = PyImport_GetModuleDict();
+    if (Py_VerboseFlag) {
+        PySys_FormatStderr("import sys # builtin\n");
+    }
+    if (PyDict_SetItemString(sys_modules, "_imp", impmod) < 0) {
+        Py_FatalError("Py_Initialize: can't save _imp to sys.modules");
+    }
+
+    value = PyObject_CallMethod(importlib, "_install", "OO", sysmod, impmod);
+    if (value == NULL) {
+        PyErr_Print();
+        Py_FatalError("Py_Initialize: importlib install failed");
+    }
+    Py_DECREF(value);
+    Py_DECREF(impmod);
+
+    _PyImportZip_Init();
+}
+
 
 void
-Py_InitializeEx(int install_sigs)
+_Py_InitializeEx_Private(int install_sigs, int install_importlib)
 {
     PyInterpreterState *interp;
     PyThreadState *tstate;
@@ -196,28 +258,6 @@ Py_InitializeEx(int install_sigs)
         return;
     initialized = 1;
     _Py_Finalizing = NULL;
-
-#ifdef __QNXNTO__
-    if ((p = Py_GETENV("ENABLE_PYTHON_KERNEL_TRACING")) && *p != '\0') {
-		enable_kernel_tracing = 1;
-	}
-
-    if ((p = Py_GETENV("PYTHON_IMPORT_ARENA_SIZE")) && *p != '\0') 
-     {
-        python_import_arena_size_g = atoi(p);
-        /* Now do some limit checking 1025-256k even bytes only */ 
-
-        if( python_import_arena_size_g <= 1024 )
-            python_import_arena_size_g = 16384;
-
-         /* 8 byte boundary check */
-        if( (python_import_arena_size_g & 8) != 0 ) 
-            python_import_arena_size_g = 16384;
-        
-        if( python_import_arena_size_g > 256000 )
-            python_import_arena_size_g = 16384; 
-     }
-#endif
 
 #if defined(HAVE_LANGINFO_H) && defined(HAVE_SETLOCALE)
     /* Set up the LC_CTYPE locale, so we can obtain
@@ -234,6 +274,12 @@ Py_InitializeEx(int install_sigs)
         Py_OptimizeFlag = add_flag(Py_OptimizeFlag, p);
     if ((p = Py_GETENV("PYTHONDONTWRITEBYTECODE")) && *p != '\0')
         Py_DontWriteBytecodeFlag = add_flag(Py_DontWriteBytecodeFlag, p);
+    /* The variable is only tested for existence here; _PyRandom_Init will
+       check its value further. */
+    if ((p = Py_GETENV("PYTHONHASHSEED")) && *p != '\0')
+        Py_HashRandomizationFlag = add_flag(Py_HashRandomizationFlag, p);
+
+    _PyRandom_Init();
 
     interp = PyInterpreterState_New();
     if (interp == NULL)
@@ -272,12 +318,10 @@ Py_InitializeEx(int install_sigs)
     interp->modules = PyDict_New();
     if (interp->modules == NULL)
         Py_FatalError("Py_Initialize: can't make modules dictionary");
-    interp->modules_reloading = PyDict_New();
-    if (interp->modules_reloading == NULL)
-        Py_FatalError("Py_Initialize: can't make modules_reloading dictionary");
 
     /* Init Unicode implementation; relies on the codec registry */
-    _PyUnicode_Init();
+    if (_PyUnicode_Init() < 0)
+        Py_FatalError("Py_Initialize: can't initialize unicode");
 
     bimod = _PyBuiltin_Init();
     if (bimod == NULL)
@@ -289,7 +333,7 @@ Py_InitializeEx(int install_sigs)
     Py_INCREF(interp->builtins);
 
     /* initialize builtin exceptions */
-    _PyExc_Init();
+    _PyExc_Init(bimod);
 
     sysmod = _PySys_Init();
     if (sysmod == NULL)
@@ -319,6 +363,15 @@ Py_InitializeEx(int install_sigs)
     /* Initialize _warnings. */
     _PyWarnings_Init();
 
+    if (!install_importlib)
+        return;
+
+    import_init(interp, sysmod);
+
+    /* initialize the faulthandler module */
+    if (_PyFaulthandler_Init())
+        Py_FatalError("Py_Initialize: can't initialize faulthandler");
+
     _PyTime_Init();
 
     if (initfsencoding(interp) < 0)
@@ -327,7 +380,7 @@ Py_InitializeEx(int install_sigs)
     if (install_sigs)
         initsigs(); /* Signal handling stuff, including initintr() */
 
-    initmain(); /* Module __main__ */
+    initmain(interp); /* Module __main__ */
     if (initstdio() < 0)
         Py_FatalError(
             "Py_Initialize: can't initialize sys standard streams");
@@ -347,6 +400,12 @@ Py_InitializeEx(int install_sigs)
 }
 
 void
+Py_InitializeEx(int install_sigs)
+{
+    _Py_InitializeEx_Private(install_sigs, 1);
+}
+
+void
 Py_Initialize(void)
 {
     Py_InitializeEx(1);
@@ -359,23 +418,40 @@ extern void dump_counts(FILE*);
 
 /* Flush stdout and stderr */
 
+static int
+file_is_closed(PyObject *fobj)
+{
+    int r;
+    PyObject *tmp = PyObject_GetAttrString(fobj, "closed");
+    if (tmp == NULL) {
+        PyErr_Clear();
+        return 0;
+    }
+    r = PyObject_IsTrue(tmp);
+    Py_DECREF(tmp);
+    if (r < 0)
+        PyErr_Clear();
+    return r > 0;
+}
+
 static void
 flush_std_files(void)
 {
     PyObject *fout = PySys_GetObject("stdout");
     PyObject *ferr = PySys_GetObject("stderr");
     PyObject *tmp;
+    _Py_IDENTIFIER(flush);
 
-    if (fout != NULL && fout != Py_None) {
-        tmp = PyObject_CallMethod(fout, "flush", "");
+    if (fout != NULL && fout != Py_None && !file_is_closed(fout)) {
+        tmp = _PyObject_CallMethodId(fout, &PyId_flush, "");
         if (tmp == NULL)
             PyErr_WriteUnraisable(fout);
         else
             Py_DECREF(tmp);
     }
 
-    if (ferr != NULL && ferr != Py_None) {
-        tmp = PyObject_CallMethod(ferr, "flush", "");
+    if (ferr != NULL && ferr != Py_None && !file_is_closed(ferr)) {
+        tmp = _PyObject_CallMethodId(ferr, &PyId_flush, "");
         if (tmp == NULL)
             PyErr_Clear();
         else
@@ -434,9 +510,6 @@ Py_Finalize(void)
     /* Disable signal handling */
     PyOS_FiniInterrupts();
 
-    /* Clear type lookup cache */
-    PyType_ClearCache();
-
     /* Collect garbage.  This may call finalizers; it's nice to call these
      * before all modules are destroyed.
      * XXX If a __del__ or weakref callback is triggered here, and tries to
@@ -468,7 +541,7 @@ Py_Finalize(void)
     flush_std_files();
 
     /* Collect final garbage.  This disposes of cycles created by
-     * new-style class definitions, for example.
+     * class definitions, for example.
      * XXX This is disabled because it caused too many problems.  If
      * XXX a __del__ or weakref callback triggers here, Python code has
      * XXX a hard time running, because even the sys module has been
@@ -489,6 +562,12 @@ Py_Finalize(void)
     /* Destroy the database used by _PyImport_{Fixup,Find}Extension */
     _PyImport_Fini();
 
+    /* Cleanup typeobject.c's internal caches. */
+    _PyType_Fini();
+
+    /* unload faulthandler module */
+    _PyFaulthandler_Fini();
+
     /* Debugging stuff */
 #ifdef COUNT_ALLOCS
     dump_counts(stdout);
@@ -506,7 +585,7 @@ Py_Finalize(void)
         _Py_PrintReferences(stderr);
 #endif /* Py_TRACE_REFS */
 
-    /* Clear interpreter state */
+    /* Clear interpreter state and all thread states. */
     PyInterpreterState_Clear(interp);
 
     /* Now we decref the exception classes.  After this point nothing
@@ -522,10 +601,6 @@ Py_Finalize(void)
     _PyGILState_Fini();
 #endif /* WITH_THREAD */
 
-    /* Delete current thread */
-    PyThreadState_Swap(NULL);
-    PyInterpreterState_Delete(interp);
-
     /* Sundry finalizers */
     PyMethod_Fini();
     PyFrame_Fini();
@@ -538,9 +613,14 @@ Py_Finalize(void)
     PyLong_Fini();
     PyFloat_Fini();
     PyDict_Fini();
+    PySlice_Fini();
 
     /* Cleanup Unicode implementation */
     _PyUnicode_Fini();
+
+    /* Delete current thread. After this, many C API calls become crashy. */
+    PyThreadState_Swap(NULL);
+    PyInterpreterState_Delete(interp);
 
     /* reset file system default encoding */
     if (!Py_HasFileSystemDefaultEncoding && Py_FileSystemDefaultEncoding) {
@@ -566,7 +646,7 @@ Py_Finalize(void)
 #endif /* Py_TRACE_REFS */
 #ifdef PYMALLOC_DEBUG
     if (Py_GETENV("PYTHONMALLOCSTATS"))
-        _PyObject_DebugMallocStats();
+        _PyObject_DebugMallocStats(stderr);
 #endif
 
     call_ll_exitfuncs();
@@ -610,7 +690,6 @@ Py_NewInterpreter(void)
     /* XXX The following is lax in error checking */
 
     interp->modules = PyDict_New();
-    interp->modules_reloading = PyDict_New();
 
     bimod = _PyImport_FindBuiltin("builtins");
     if (bimod != NULL) {
@@ -621,11 +700,12 @@ Py_NewInterpreter(void)
     }
 
     /* initialize builtin exceptions */
-    _PyExc_Init();
+    _PyExc_Init(bimod);
 
     sysmod = _PyImport_FindBuiltin("sys");
     if (bimod != NULL && sysmod != NULL) {
         PyObject *pstderr;
+
         interp->sysdict = PyModule_GetDict(sysmod);
         if (interp->sysdict == NULL)
             goto handle_error;
@@ -644,13 +724,15 @@ Py_NewInterpreter(void)
 
         _PyImportHooks_Init();
 
+        import_init(interp, sysmod);
+
         if (initfsencoding(interp) < 0)
             goto handle_error;
 
         if (initstdio() < 0)
             Py_FatalError(
             "Py_Initialize: can't initialize sys standard streams");
-        initmain();
+        initmain(interp);
         if (!Py_NoSiteFlag)
             initsite();
     }
@@ -700,7 +782,11 @@ Py_EndInterpreter(PyThreadState *tstate)
     PyInterpreterState_Delete(interp);
 }
 
+#ifdef MS_WINDOWS
 static wchar_t *progname = L"python";
+#else
+static wchar_t *progname = L"python3";
+#endif
 
 void
 Py_SetProgramName(wchar_t *pn)
@@ -731,8 +817,9 @@ Py_GetPythonHome(void)
     if (home == NULL && !Py_IgnoreEnvironmentFlag) {
         char* chome = Py_GETENV("PYTHONHOME");
         if (chome) {
-            size_t r = mbstowcs(env_home, chome, PATH_MAX+1);
-            if (r != (size_t)-1 && r <= PATH_MAX)
+            size_t size = Py_ARRAY_LENGTH(env_home);
+            size_t r = mbstowcs(env_home, chome, size);
+            if (r != (size_t)-1 && r < size)
                 home = env_home;
         }
 
@@ -743,7 +830,7 @@ Py_GetPythonHome(void)
 /* Create __main__ module */
 
 static void
-initmain(void)
+initmain(PyInterpreterState *interp)
 {
     PyObject *m, *d;
     m = PyImport_AddModule("__main__");
@@ -752,10 +839,30 @@ initmain(void)
     d = PyModule_GetDict(m);
     if (PyDict_GetItemString(d, "__builtins__") == NULL) {
         PyObject *bimod = PyImport_ImportModule("builtins");
-        if (bimod == NULL ||
-            PyDict_SetItemString(d, "__builtins__", bimod) != 0)
-            Py_FatalError("can't add __builtins__ to __main__");
+        if (bimod == NULL) {
+            Py_FatalError("Failed to retrieve builtins module");
+        }
+        if (PyDict_SetItemString(d, "__builtins__", bimod) < 0) {
+            Py_FatalError("Failed to initialize __main__.__builtins__");
+        }
         Py_DECREF(bimod);
+    }
+    /* Main is a little special - imp.is_builtin("__main__") will return
+     * False, but BuiltinImporter is still the most appropriate initial
+     * setting for its __loader__ attribute. A more suitable value will
+     * be set if __main__ gets further initialized later in the startup
+     * process.
+     */
+    if (PyDict_GetItemString(d, "__loader__") == NULL) {
+        PyObject *loader = PyObject_GetAttrString(interp->importlib,
+                                                  "BuiltinImporter");
+        if (loader == NULL) {
+            Py_FatalError("Failed to retrieve BuiltinImporter");
+        }
+        if (PyDict_SetItemString(d, "__loader__", loader) < 0) {
+            Py_FatalError("Failed to initialize __main__.__loader__");
+        }
+        Py_DECREF(loader);
     }
 }
 
@@ -763,24 +870,17 @@ static int
 initfsencoding(PyInterpreterState *interp)
 {
     PyObject *codec;
-#if defined(HAVE_LANGINFO_H) && defined(CODESET)
-    char *codeset = NULL;
 
-    if (Py_FileSystemDefaultEncoding == NULL) {
-        /* On Unix, set the file system encoding according to the
-           user's preference, if the CODESET names a well-known
-           Python codec, and Py_FileSystemDefaultEncoding isn't
-           initialized by other means. */
-        codeset = get_codeset();
-        if (codeset == NULL)
+    if (Py_FileSystemDefaultEncoding == NULL)
+    {
+        Py_FileSystemDefaultEncoding = get_locale_encoding();
+        if (Py_FileSystemDefaultEncoding == NULL)
             Py_FatalError("Py_Initialize: Unable to get the locale encoding");
 
-        Py_FileSystemDefaultEncoding = codeset;
         Py_HasFileSystemDefaultEncoding = 0;
         interp->fscodec_initialized = 1;
         return 0;
     }
-#endif
 
     /* the encoding is mbcs, utf-8 or ascii */
     codec = _PyCodec_Lookup(Py_FileSystemDefaultEncoding);
@@ -822,6 +922,11 @@ create_stdio(PyObject* io,
     const char* newline;
     PyObject *line_buffering;
     int buffering, isatty;
+    _Py_IDENTIFIER(open);
+    _Py_IDENTIFIER(isatty);
+    _Py_IDENTIFIER(TextIOWrapper);
+    _Py_IDENTIFIER(name);
+    _Py_IDENTIFIER(mode);
 
     /* stdin is always opened in buffered mode, first because it shouldn't
        make a difference in common use cases, second because TextIOWrapper
@@ -836,14 +941,15 @@ create_stdio(PyObject* io,
         mode = "wb";
     else
         mode = "rb";
-    buf = PyObject_CallMethod(io, "open", "isiOOOi",
-                              fd, mode, buffering,
-                              Py_None, Py_None, Py_None, 0);
+    buf = _PyObject_CallMethodId(io, &PyId_open, "isiOOOi",
+                                 fd, mode, buffering,
+                                 Py_None, Py_None, Py_None, 0);
     if (buf == NULL)
         goto error;
 
     if (buffering) {
-        raw = PyObject_GetAttrString(buf, "raw");
+        _Py_IDENTIFIER(raw);
+        raw = _PyObject_GetAttrId(buf, &PyId_raw);
         if (raw == NULL)
             goto error;
     }
@@ -853,9 +959,9 @@ create_stdio(PyObject* io,
     }
 
     text = PyUnicode_FromString(name);
-    if (text == NULL || PyObject_SetAttrString(raw, "name", text) < 0)
+    if (text == NULL || _PyObject_SetAttrId(raw, &PyId_name, text) < 0)
         goto error;
-    res = PyObject_CallMethod(raw, "isatty", "");
+    res = _PyObject_CallMethodId(raw, &PyId_isatty, "");
     if (res == NULL)
         goto error;
     isatty = PyObject_IsTrue(res);
@@ -870,17 +976,20 @@ create_stdio(PyObject* io,
     Py_CLEAR(raw);
     Py_CLEAR(text);
 
-    newline = "\n";
 #ifdef MS_WINDOWS
-    if (!write_mode) {
-        /* translate \r\n to \n for sys.stdin on Windows */
-        newline = NULL;
-    }
+    /* sys.stdin: enable universal newline mode, translate "\r\n" and "\r"
+       newlines to "\n".
+       sys.stdout and sys.stderr: translate "\n" to "\r\n". */
+    newline = NULL;
+#else
+    /* sys.stdin: split lines at "\n".
+       sys.stdout and sys.stderr: don't translate newlines (use "\n"). */
+    newline = "\n";
 #endif
 
-    stream = PyObject_CallMethod(io, "TextIOWrapper", "OsssO",
-                                 buf, encoding, errors,
-                                 newline, line_buffering);
+    stream = _PyObject_CallMethodId(io, &PyId_TextIOWrapper, "OsssO",
+                                    buf, encoding, errors,
+                                    newline, line_buffering);
     Py_CLEAR(buf);
     if (stream == NULL)
         goto error;
@@ -890,7 +999,7 @@ create_stdio(PyObject* io,
     else
         mode = "r";
     text = PyUnicode_FromString(mode);
-    if (!text || PyObject_SetAttrString(stream, "mode", text) < 0)
+    if (!text || _PyObject_SetAttrId(stream, &PyId_mode, text) < 0)
         goto error;
     Py_CLEAR(text);
     return stream;
@@ -901,6 +1010,19 @@ error:
     Py_XDECREF(text);
     Py_XDECREF(raw);
     return NULL;
+}
+
+static int
+is_valid_fd(int fd)
+{
+    int dummy_fd;
+    if (fd < 0 || !_PyVerify_fd(fd))
+        return 0;
+    dummy_fd = dup(fd);
+    if (dummy_fd < 0)
+        return 0;
+    close(dummy_fd);
+    return 1;
 }
 
 /* Initialize sys.stdin, stdout, stderr and builtins.open */
@@ -962,13 +1084,9 @@ initstdio(void)
      * and fileno() may point to an invalid file descriptor. For example
      * GUI apps don't have valid standard streams by default.
      */
-    if (fd < 0) {
-#ifdef MS_WINDOWS
+    if (!is_valid_fd(fd)) {
         std = Py_None;
         Py_INCREF(std);
-#else
-        goto error;
-#endif
     }
     else {
         std = create_stdio(iomod, fd, 0, "<stdin>", encoding, errors);
@@ -981,13 +1099,9 @@ initstdio(void)
 
     /* Set sys.stdout */
     fd = fileno(stdout);
-    if (fd < 0) {
-#ifdef MS_WINDOWS
+    if (!is_valid_fd(fd)) {
         std = Py_None;
         Py_INCREF(std);
-#else
-        goto error;
-#endif
     }
     else {
         std = create_stdio(iomod, fd, 1, "<stdout>", encoding, errors);
@@ -1001,13 +1115,9 @@ initstdio(void)
 #if 1 /* Disable this if you have trouble debugging bootstrap stuff */
     /* Set sys.stderr, replaces the preliminary stderr */
     fd = fileno(stderr);
-    if (fd < 0) {
-#ifdef MS_WINDOWS
+    if (!is_valid_fd(fd)) {
         std = Py_None;
         Py_INCREF(std);
-#else
-        goto error;
-#endif
     }
     else {
         std = create_stdio(iomod, fd, 1, "<stderr>", encoding, "backslashreplace");
@@ -1022,7 +1132,8 @@ initstdio(void)
         const char * encoding;
         encoding = _PyUnicode_AsString(encoding_attr);
         if (encoding != NULL) {
-            _PyCodec_Lookup(encoding);
+            PyObject *codec_info = _PyCodec_Lookup(encoding);
+            Py_XDECREF(codec_info);
         }
         Py_DECREF(encoding_attr);
     }
@@ -1128,18 +1239,18 @@ PyRun_InteractiveOneFlags(FILE *fp, const char *filename, PyCompilerFlags *flags
     PyArena *arena;
     char *ps1 = "", *ps2 = "", *enc = NULL;
     int errcode = 0;
+    _Py_IDENTIFIER(encoding);
 
     if (fp == stdin) {
-        /* Fetch encoding from sys.stdin */
+        /* Fetch encoding from sys.stdin if possible. */
         v = PySys_GetObject("stdin");
-        if (v == NULL || v == Py_None)
-            return -1;
-        oenc = PyObject_GetAttrString(v, "encoding");
-        if (!oenc)
-            return -1;
-        enc = _PyUnicode_AsString(oenc);
-        if (enc == NULL)
-            return -1;
+        if (v && v != Py_None) {
+            oenc = _PyObject_GetAttrId(v, &PyId_encoding);
+            if (oenc)
+                enc = _PyUnicode_AsString(oenc);
+            if (!enc)
+                PyErr_Clear();
+        }
     }
     v = PySys_GetObject("ps1");
     if (v != NULL) {
@@ -1247,60 +1358,103 @@ maybe_pyc_file(FILE *fp, const char* filename, const char* ext, int closeit)
 }
 
 int
+static set_main_loader(PyObject *d, const char *filename, const char *loader_name)
+{
+    PyInterpreterState *interp;
+    PyThreadState *tstate;
+    PyObject *filename_obj, *loader_type, *loader;
+    int result = 0;
+
+    filename_obj = PyUnicode_DecodeFSDefault(filename);
+    if (filename_obj == NULL)
+        return -1;
+    /* Get current thread state and interpreter pointer */
+    tstate = PyThreadState_GET();
+    interp = tstate->interp;
+    loader_type = PyObject_GetAttrString(interp->importlib, loader_name);
+    if (loader_type == NULL) {
+        Py_DECREF(filename_obj);
+        return -1;
+    }
+    loader = PyObject_CallFunction(loader_type, "sN", "__main__", filename_obj);
+    Py_DECREF(loader_type);
+    if (loader == NULL) {
+        return -1;
+    }
+    if (PyDict_SetItemString(d, "__loader__", loader) < 0) {
+        result = -1;
+    }
+    Py_DECREF(loader);
+    return result;
+}
+
+int
 PyRun_SimpleFileExFlags(FILE *fp, const char *filename, int closeit,
                         PyCompilerFlags *flags)
 {
     PyObject *m, *d, *v;
     const char *ext;
-    int set_file_name = 0, ret;
+    int set_file_name = 0, ret = -1;
     size_t len;
 
     m = PyImport_AddModule("__main__");
     if (m == NULL)
         return -1;
+    Py_INCREF(m);
     d = PyModule_GetDict(m);
     if (PyDict_GetItemString(d, "__file__") == NULL) {
         PyObject *f;
         f = PyUnicode_DecodeFSDefault(filename);
         if (f == NULL)
-            return -1;
+            goto done;
         if (PyDict_SetItemString(d, "__file__", f) < 0) {
             Py_DECREF(f);
-            return -1;
+            goto done;
         }
-        if (PyDict_SetItemString(d, "__cached__", Py_None) < 0)
-            return -1;
+        if (PyDict_SetItemString(d, "__cached__", Py_None) < 0) {
+            Py_DECREF(f);
+            goto done;
+        }
         set_file_name = 1;
         Py_DECREF(f);
     }
     len = strlen(filename);
     ext = filename + len - (len > 4 ? 4 : 0);
     if (maybe_pyc_file(fp, filename, ext, closeit)) {
+        FILE *pyc_fp;
         /* Try to run a pyc file. First, re-open in binary */
         if (closeit)
             fclose(fp);
-        if ((fp = fopen(filename, "rb")) == NULL) {
+        if ((pyc_fp = fopen(filename, "rb")) == NULL) {
             fprintf(stderr, "python: Can't reopen .pyc file\n");
-            ret = -1;
             goto done;
         }
-
-#ifdef __QNXNTO__
-        SET_BUFFER_IO(fp);
-#endif
-
         /* Turn on optimization if a .pyo file is given */
         if (strcmp(ext, ".pyo") == 0)
             Py_OptimizeFlag = 1;
-        v = run_pyc_file(fp, filename, d, d, flags);
+
+        if (set_main_loader(d, filename, "SourcelessFileLoader") < 0) {
+            fprintf(stderr, "python: failed to set __main__.__loader__\n");
+            ret = -1;
+            fclose(pyc_fp);
+            goto done;
+        }
+        v = run_pyc_file(pyc_fp, filename, d, d, flags);
+        fclose(pyc_fp);
     } else {
+        /* When running from stdin, leave __main__.__loader__ alone */
+        if (strcmp(filename, "<stdin>") != 0 &&
+            set_main_loader(d, filename, "SourceFileLoader") < 0) {
+            fprintf(stderr, "python: failed to set __main__.__loader__\n");
+            ret = -1;
+            goto done;
+        }
         v = PyRun_FileExFlags(fp, filename, Py_file_input, d, d,
                               closeit, flags);
     }
     flush_io();
     if (v == NULL) {
         PyErr_Print();
-        ret = -1;
         goto done;
     }
     Py_DECREF(v);
@@ -1308,6 +1462,7 @@ PyRun_SimpleFileExFlags(FILE *fp, const char *filename, int closeit,
   done:
     if (set_file_name && PyDict_DelItemString(d, "__file__"))
         PyErr_Clear();
+    Py_DECREF(m);
     return ret;
 }
 
@@ -1334,62 +1489,73 @@ parse_syntax_error(PyObject *err, PyObject **message, const char **filename,
 {
     long hold;
     PyObject *v;
+    _Py_IDENTIFIER(msg);
+    _Py_IDENTIFIER(filename);
+    _Py_IDENTIFIER(lineno);
+    _Py_IDENTIFIER(offset);
+    _Py_IDENTIFIER(text);
 
-    /* old style errors */
-    if (PyTuple_Check(err))
-        return PyArg_ParseTuple(err, "O(ziiz)", message, filename,
-                                lineno, offset, text);
+    *message = NULL;
 
     /* new style errors.  `err' is an instance */
-
-    if (! (v = PyObject_GetAttrString(err, "msg")))
+    *message = _PyObject_GetAttrId(err, &PyId_msg);
+    if (!*message)
         goto finally;
-    *message = v;
 
-    if (!(v = PyObject_GetAttrString(err, "filename")))
+    v = _PyObject_GetAttrId(err, &PyId_filename);
+    if (!v)
         goto finally;
-    if (v == Py_None)
+    if (v == Py_None) {
+        Py_DECREF(v);
         *filename = NULL;
-    else if (! (*filename = _PyUnicode_AsString(v)))
-        goto finally;
+    }
+    else {
+        *filename = _PyUnicode_AsString(v);
+        Py_DECREF(v);
+        if (!*filename)
+            goto finally;
+    }
 
-    Py_DECREF(v);
-    if (!(v = PyObject_GetAttrString(err, "lineno")))
+    v = _PyObject_GetAttrId(err, &PyId_lineno);
+    if (!v)
         goto finally;
     hold = PyLong_AsLong(v);
     Py_DECREF(v);
-    v = NULL;
     if (hold < 0 && PyErr_Occurred())
         goto finally;
     *lineno = (int)hold;
 
-    if (!(v = PyObject_GetAttrString(err, "offset")))
+    v = _PyObject_GetAttrId(err, &PyId_offset);
+    if (!v)
         goto finally;
     if (v == Py_None) {
         *offset = -1;
         Py_DECREF(v);
-        v = NULL;
     } else {
         hold = PyLong_AsLong(v);
         Py_DECREF(v);
-        v = NULL;
         if (hold < 0 && PyErr_Occurred())
             goto finally;
         *offset = (int)hold;
     }
 
-    if (!(v = PyObject_GetAttrString(err, "text")))
+    v = _PyObject_GetAttrId(err, &PyId_text);
+    if (!v)
         goto finally;
-    if (v == Py_None)
+    if (v == Py_None) {
+        Py_DECREF(v);
         *text = NULL;
-    else if (!PyUnicode_Check(v) ||
-             !(*text = _PyUnicode_AsString(v)))
-        goto finally;
-    Py_DECREF(v);
+    }
+    else {
+        *text = _PyUnicode_AsString(v);
+        Py_DECREF(v);
+        if (!*text)
+            goto finally;
+    }
     return 1;
 
 finally:
-    Py_XDECREF(v);
+    Py_XDECREF(*message);
     return 0;
 }
 
@@ -1447,7 +1613,8 @@ handle_system_exit(void)
         goto done;
     if (PyExceptionInstance_Check(value)) {
         /* The error code should be in the `code' attribute. */
-        PyObject *code = PyObject_GetAttrString(value, "code");
+        _Py_IDENTIFIER(code);
+        PyObject *code = _PyObject_GetAttrId(value, &PyId_code);
         if (code) {
             Py_DECREF(value);
             value = code;
@@ -1554,6 +1721,7 @@ print_exception(PyObject *f, PyObject *value)
 {
     int err = 0;
     PyObject *type, *tb;
+    _Py_IDENTIFIER(print_file_and_line);
 
     if (!PyExceptionInstance_Check(value)) {
         PyFile_WriteString("TypeError: print_exception(): Exception expected for value, ", f);
@@ -1569,7 +1737,7 @@ print_exception(PyObject *f, PyObject *value)
     if (tb && tb != Py_None)
         err = PyTraceBack_Print(tb, f);
     if (err == 0 &&
-        PyObject_HasAttrString(value, "print_file_and_line"))
+        _PyObject_HasAttrId(value, &PyId_print_file_and_line))
     {
         PyObject *message;
         const char *filename, *text;
@@ -1604,6 +1772,7 @@ print_exception(PyObject *f, PyObject *value)
     else {
         PyObject* moduleName;
         char* className;
+        _Py_IDENTIFIER(__module__);
         assert(PyExceptionClass_Check(type));
         className = PyExceptionClass_Name(type);
         if (className != NULL) {
@@ -1612,10 +1781,10 @@ print_exception(PyObject *f, PyObject *value)
                 className = dot+1;
         }
 
-        moduleName = PyObject_GetAttrString(type, "__module__");
+        moduleName = _PyObject_GetAttrId(type, &PyId___module__);
         if (moduleName == NULL || !PyUnicode_Check(moduleName))
         {
-            Py_DECREF(moduleName);
+            Py_XDECREF(moduleName);
             err = PyFile_WriteString("<unknown>", f);
         }
         else {
@@ -1642,7 +1811,7 @@ print_exception(PyObject *f, PyObject *value)
         if (s == NULL)
             err = -1;
         else if (!PyUnicode_Check(s) ||
-            PyUnicode_GetSize(s) != 0)
+            PyUnicode_GetLength(s) != 0)
             err = PyFile_WriteString(": ", f);
         if (err == 0)
           err = PyFile_WriteObject(s, f, Py_PRINT_RAW);
@@ -1690,7 +1859,8 @@ print_exception_recursive(PyObject *f, PyObject *value, PyObject *seen)
                         cause_message, f);
                 }
             }
-            else if (context) {
+            else if (context &&
+                !((PyBaseExceptionObject *)value)->suppress_context) {
                 res = PySet_Contains(seen, context);
                 if (res == -1)
                     PyErr_Clear();
@@ -1715,6 +1885,16 @@ PyErr_Display(PyObject *exception, PyObject *value, PyObject *tb)
 {
     PyObject *seen;
     PyObject *f = PySys_GetObject("stderr");
+    if (PyExceptionInstance_Check(value)
+        && tb != NULL && PyTraceBack_Check(tb)) {
+        /* Put the traceback on the exception, otherwise it won't get
+           displayed.  See issue #18776. */
+        PyObject *cur_tb = PyException_GetTraceback(value);
+        if (cur_tb == NULL)
+            PyException_SetTraceback(value, tb);
+        else
+            Py_DECREF(cur_tb);
+    }
     if (f == Py_None) {
         /* pass */
     }
@@ -1779,13 +1959,14 @@ flush_io(void)
 {
     PyObject *f, *r;
     PyObject *type, *value, *traceback;
+    _Py_IDENTIFIER(flush);
 
     /* Save the current exception */
     PyErr_Fetch(&type, &value, &traceback);
 
     f = PySys_GetObject("stderr");
     if (f != NULL) {
-        r = PyObject_CallMethod(f, "flush", "");
+        r = _PyObject_CallMethodId(f, &PyId_flush, "");
         if (r)
             Py_DECREF(r);
         else
@@ -1793,7 +1974,7 @@ flush_io(void)
     }
     f = PySys_GetObject("stdout");
     if (f != NULL) {
-        r = PyObject_CallMethod(f, "flush", "");
+        r = _PyObject_CallMethodId(f, &PyId_flush, "");
         if (r)
             Py_DECREF(r);
         else
@@ -1832,9 +2013,10 @@ run_pyc_file(FILE *fp, const char *filename, PyObject *globals,
                    "Bad magic number in .pyc file");
         return NULL;
     }
+    /* Skip mtime and size */
+    (void) PyMarshal_ReadLongFromFile(fp);
     (void) PyMarshal_ReadLongFromFile(fp);
     v = PyMarshal_ReadLastObjectFromFile(fp);
-    fclose(fp);
     if (v == NULL || !PyCode_Check(v)) {
         Py_XDECREF(v);
         PyErr_SetString(PyExc_RuntimeError,
@@ -1924,12 +2106,13 @@ PyParser_ASTFromString(const char *s, const char *filename, int start,
         flags->cf_flags |= iflags & PyCF_MASK;
         mod = PyAST_FromNode(n, flags, filename, arena);
         PyNode_Free(n);
-        return mod;
     }
     else {
         err_input(&err);
-        return NULL;
+        mod = NULL;
     }
+    err_free(&err);
+    return mod;
 }
 
 mod_ty
@@ -1954,14 +2137,15 @@ PyParser_ASTFromFile(FILE *fp, const char *filename, const char* enc,
         flags->cf_flags |= iflags & PyCF_MASK;
         mod = PyAST_FromNode(n, flags, filename, arena);
         PyNode_Free(n);
-        return mod;
     }
     else {
         err_input(&err);
         if (errcode)
             *errcode = err.error;
-        return NULL;
+        mod = NULL;
     }
+    err_free(&err);
+    return mod;
 }
 
 /* Simplified interface to parsefile -- return node or set exception */
@@ -1975,6 +2159,7 @@ PyParser_SimpleParseFileFlags(FILE *fp, const char *filename, int start, int fla
                                       start, NULL, NULL, &err, flags);
     if (n == NULL)
         err_input(&err);
+    err_free(&err);
 
     return n;
 }
@@ -1989,6 +2174,7 @@ PyParser_SimpleParseStringFlags(const char *str, int start, int flags)
                                         start, &err, flags);
     if (n == NULL)
         err_input(&err);
+    err_free(&err);
     return n;
 }
 
@@ -2001,6 +2187,7 @@ PyParser_SimpleParseStringFlagsFilename(const char *str, const char *filename,
                             &_PyParser_Grammar, start, &err, flags);
     if (n == NULL)
         err_input(&err);
+    err_free(&err);
     return n;
 }
 
@@ -2014,9 +2201,21 @@ PyParser_SimpleParseStringFilename(const char *str, const char *filename, int st
    even parser modules. */
 
 void
+PyParser_ClearError(perrdetail *err)
+{
+    err_free(err);
+}
+
+void
 PyParser_SetError(perrdetail *err)
 {
     err_input(err);
+}
+
+static void
+err_free(perrdetail *err)
+{
+    Py_CLEAR(err->filename);
 }
 
 /* Set the error appropriate to the given input error code (see errcode.h) */
@@ -2026,8 +2225,8 @@ err_input(perrdetail *err)
 {
     PyObject *v, *w, *errtype, *errtext;
     PyObject *msg_obj = NULL;
-    PyObject *filename;
     char *msg = NULL;
+    int offset = err->offset;
 
     errtype = PyExc_SyntaxError;
     switch (err->error) {
@@ -2098,6 +2297,9 @@ err_input(perrdetail *err)
     case E_IDENTIFIER:
         msg = "invalid character in identifier";
         break;
+    case E_BADSINGLE:
+        msg = "multiple statements found while compiling a single statement";
+        break;
     default:
         fprintf(stderr, "error=%d\n", err->error);
         msg = "unknown parsing error";
@@ -2109,20 +2311,20 @@ err_input(perrdetail *err)
         errtext = Py_None;
         Py_INCREF(Py_None);
     } else {
-        errtext = PyUnicode_DecodeUTF8(err->text, strlen(err->text),
+        errtext = PyUnicode_DecodeUTF8(err->text, err->offset,
                                        "replace");
+        if (errtext != NULL) {
+            Py_ssize_t len = strlen(err->text);
+            offset = (int)PyUnicode_GET_LENGTH(errtext);
+            if (len != err->offset) {
+                Py_DECREF(errtext);
+                errtext = PyUnicode_DecodeUTF8(err->text, len,
+                                               "replace");
+            }
+        }
     }
-    if (err->filename != NULL)
-        filename = PyUnicode_DecodeFSDefault(err->filename);
-    else {
-        Py_INCREF(Py_None);
-        filename = Py_None;
-    }
-    if (filename != NULL)
-        v = Py_BuildValue("(NiiN)", filename,
-                          err->lineno, err->offset, errtext);
-    else
-        v = NULL;
+    v = Py_BuildValue("(OiiN)", err->filename,
+                      err->lineno, offset, errtext);
     if (v != NULL) {
         if (msg_obj)
             w = Py_BuildValue("(OO)", msg_obj, v);
@@ -2146,11 +2348,24 @@ cleanup:
 void
 Py_FatalError(const char *msg)
 {
+    const int fd = fileno(stderr);
+    PyThreadState *tstate;
+
     fprintf(stderr, "Fatal Python error: %s\n", msg);
     fflush(stderr); /* it helps in Windows debug build */
     if (PyErr_Occurred()) {
         PyErr_PrintEx(0);
     }
+    else {
+        tstate = _Py_atomic_load_relaxed(&_PyThreadState_Current);
+        if (tstate != NULL) {
+            fputc('\n', stderr);
+            fflush(stderr);
+            _Py_DumpTracebackThreads(fd, tstate->interp, tstate);
+        }
+        _PyFaulthandler_Fini();
+    }
+
 #ifdef MS_WINDOWS
     {
         size_t len = strlen(msg);
@@ -2205,6 +2420,7 @@ static void
 wait_for_thread_shutdown(void)
 {
 #ifdef WITH_THREAD
+    _Py_IDENTIFIER(_shutdown);
     PyObject *result;
     PyThreadState *tstate = PyThreadState_GET();
     PyObject *threading = PyMapping_GetItemString(tstate->interp->modules,
@@ -2214,7 +2430,7 @@ wait_for_thread_shutdown(void)
         PyErr_Clear();
         return;
     }
-    result = PyObject_CallMethod(threading, "_shutdown", "");
+    result = _PyObject_CallMethodId(threading, &PyId__shutdown, "");
     if (result == NULL) {
         PyErr_WriteUnraisable(threading);
     }

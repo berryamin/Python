@@ -18,11 +18,12 @@ static int
 check_matched(PyObject *obj, PyObject *arg)
 {
     PyObject *result;
+    _Py_IDENTIFIER(match);
     int rc;
 
     if (obj == Py_None)
         return 1;
-    result = PyObject_CallMethod(obj, "match", "O", arg);
+    result = _PyObject_CallMethodId(obj, &PyId_match, "O", arg);
     if (result == NULL)
         return -1;
 
@@ -97,7 +98,7 @@ get_default_action(void)
 }
 
 
-/* The item is a borrowed reference. */
+/* The item is a new reference. */
 static const char *
 get_filter(PyObject *category, PyObject *text, Py_ssize_t lineno,
            PyObject *module, PyObject **item)
@@ -128,14 +129,15 @@ get_filter(PyObject *category, PyObject *text, Py_ssize_t lineno,
         Py_ssize_t ln;
         int is_subclass, good_msg, good_mod;
 
-        tmp_item = *item = PyList_GET_ITEM(_filters, i);
-        if (PyTuple_Size(tmp_item) != 5) {
+        tmp_item = PyList_GET_ITEM(_filters, i);
+        if (!PyTuple_Check(tmp_item) || PyTuple_GET_SIZE(tmp_item) != 5) {
             PyErr_Format(PyExc_ValueError,
                          MODULE_NAME ".filters item %zd isn't a 5-tuple", i);
             return NULL;
         }
 
         /* Python code: action, msg, cat, mod, ln = item */
+        Py_INCREF(tmp_item);
         action = PyTuple_GET_ITEM(tmp_item, 0);
         msg = PyTuple_GET_ITEM(tmp_item, 1);
         cat = PyTuple_GET_ITEM(tmp_item, 2);
@@ -147,15 +149,23 @@ get_filter(PyObject *category, PyObject *text, Py_ssize_t lineno,
         is_subclass = PyObject_IsSubclass(category, cat);
         ln = PyLong_AsSsize_t(ln_obj);
         if (good_msg == -1 || good_mod == -1 || is_subclass == -1 ||
-            (ln == -1 && PyErr_Occurred()))
+            (ln == -1 && PyErr_Occurred())) {
+            Py_DECREF(tmp_item);
             return NULL;
+        }
 
-        if (good_msg && is_subclass && good_mod && (ln == 0 || lineno == ln))
+        if (good_msg && is_subclass && good_mod && (ln == 0 || lineno == ln)) {
+            *item = tmp_item;
             return _PyUnicode_AsString(action);
+        }
+
+        Py_DECREF(tmp_item);
     }
 
     action = get_default_action();
     if (action != NULL) {
+        Py_INCREF(Py_None);
+        *item = Py_None;
         return _PyUnicode_AsString(action);
     }
 
@@ -202,13 +212,13 @@ normalize_module(PyObject *filename)
 
     mod_str = _PyUnicode_AsString(filename);
     if (mod_str == NULL)
-            return NULL;
-    len = PyUnicode_GetSize(filename);
+        return NULL;
+    len = PyUnicode_GetLength(filename);
     if (len < 0)
         return NULL;
     if (len >= 3 &&
         strncmp(mod_str + (len - 3), ".py", 3) == 0) {
-        module = PyUnicode_FromStringAndSize(mod_str, len-3);
+        module = PyUnicode_Substring(filename, 0, len-3);
     }
     else {
         module = filename;
@@ -246,10 +256,11 @@ show_warning(PyObject *filename, int lineno, PyObject *text, PyObject
     PyObject *f_stderr;
     PyObject *name;
     char lineno_str[128];
+    _Py_IDENTIFIER(__name__);
 
     PyOS_snprintf(lineno_str, sizeof(lineno_str), ":%d: ", lineno);
 
-    name = PyObject_GetAttrString(category, "__name__");
+    name = _PyObject_GetAttrId(category, &PyId___name__);
     if (name == NULL)  /* XXX Can an object lack a '__name__' attribute? */
         return;
 
@@ -293,7 +304,7 @@ warn_explicit(PyObject *category, PyObject *message,
               PyObject *module, PyObject *registry, PyObject *sourceline)
 {
     PyObject *key = NULL, *text = NULL, *result = NULL, *lineno_obj = NULL;
-    PyObject *item = Py_None;
+    PyObject *item = NULL;
     const char *action;
     int rc;
 
@@ -409,10 +420,10 @@ warn_explicit(PyObject *category, PyObject *message,
         else {
             PyObject *res;
 
-            if (!PyMethod_Check(show_fxn) && !PyFunction_Check(show_fxn)) {
+            if (!PyCallable_Check(show_fxn)) {
                 PyErr_SetString(PyExc_TypeError,
                                 "warnings.showwarning() must be set to a "
-                                "function or method");
+                                "callable");
                 Py_DECREF(show_fxn);
                 goto cleanup;
             }
@@ -434,6 +445,7 @@ warn_explicit(PyObject *category, PyObject *message,
     Py_INCREF(result);
 
  cleanup:
+    Py_XDECREF(item);
     Py_XDECREF(key);
     Py_XDECREF(text);
     Py_XDECREF(lineno_obj);
@@ -497,18 +509,28 @@ setup_context(Py_ssize_t stack_level, PyObject **filename, int *lineno,
     /* Setup filename. */
     *filename = PyDict_GetItemString(globals, "__file__");
     if (*filename != NULL && PyUnicode_Check(*filename)) {
-        Py_ssize_t len = PyUnicode_GetSize(*filename);
-        Py_UNICODE *unicode = PyUnicode_AS_UNICODE(*filename);
+        Py_ssize_t len;
+        int kind;
+        void *data;
 
+        if (PyUnicode_READY(*filename))
+            goto handle_error;
+
+        len = PyUnicode_GetLength(*filename);
+        kind = PyUnicode_KIND(*filename);
+        data = PyUnicode_DATA(*filename);
+
+#define ascii_lower(c) ((c <= 127) ? Py_TOLOWER(c) : 0)
         /* if filename.lower().endswith((".pyc", ".pyo")): */
         if (len >= 4 &&
-            unicode[len-4] == '.' &&
-            Py_UNICODE_TOLOWER(unicode[len-3]) == 'p' &&
-            Py_UNICODE_TOLOWER(unicode[len-2]) == 'y' &&
-            (Py_UNICODE_TOLOWER(unicode[len-1]) == 'c' ||
-                Py_UNICODE_TOLOWER(unicode[len-1]) == 'o'))
+            PyUnicode_READ(kind, data, len-4) == '.' &&
+            ascii_lower(PyUnicode_READ(kind, data, len-3)) == 'p' &&
+            ascii_lower(PyUnicode_READ(kind, data, len-2)) == 'y' &&
+            (ascii_lower(PyUnicode_READ(kind, data, len-1)) == 'c' ||
+                ascii_lower(PyUnicode_READ(kind, data, len-1)) == 'o'))
         {
-            *filename = PyUnicode_FromUnicode(unicode, len-1);
+            *filename = PyUnicode_Substring(*filename, 0,
+                                            PyUnicode_GET_LENGTH(*filename)-1);
             if (*filename == NULL)
                 goto handle_error;
         }
@@ -643,8 +665,9 @@ warnings_warn_explicit(PyObject *self, PyObject *args, PyObject *kwds)
         return NULL;
 
     if (module_globals) {
-        static PyObject *get_source_name = NULL;
-        static PyObject *splitlines_name = NULL;
+        _Py_IDENTIFIER(get_source);
+        _Py_IDENTIFIER(splitlines);
+        PyObject *tmp;
         PyObject *loader;
         PyObject *module_name;
         PyObject *source;
@@ -652,16 +675,10 @@ warnings_warn_explicit(PyObject *self, PyObject *args, PyObject *kwds)
         PyObject *source_line;
         PyObject *returned;
 
-        if (get_source_name == NULL) {
-            get_source_name = PyUnicode_InternFromString("get_source");
-            if (!get_source_name)
-                return NULL;
-        }
-        if (splitlines_name == NULL) {
-            splitlines_name = PyUnicode_InternFromString("splitlines");
-            if (!splitlines_name)
-                return NULL;
-        }
+        if ((tmp = _PyUnicode_FromId(&PyId_get_source)) == NULL)
+            return NULL;
+        if ((tmp = _PyUnicode_FromId(&PyId_splitlines)) == NULL)
+            return NULL;
 
         /* Check/get the requisite pieces needed for the loader. */
         loader = PyDict_GetItemString(module_globals, "__loader__");
@@ -671,11 +688,11 @@ warnings_warn_explicit(PyObject *self, PyObject *args, PyObject *kwds)
             goto standard_call;
 
         /* Make sure the loader implements the optional get_source() method. */
-        if (!PyObject_HasAttrString(loader, "get_source"))
+        if (!_PyObject_HasAttrId(loader, &PyId_get_source))
                 goto standard_call;
         /* Call get_source() to get the source code. */
-        source = PyObject_CallMethodObjArgs(loader, get_source_name,
-                                                module_name, NULL);
+        source = PyObject_CallMethodObjArgs(loader, PyId_get_source.object,
+                                            module_name, NULL);
         if (!source)
             return NULL;
         else if (source == Py_None) {
@@ -684,8 +701,9 @@ warnings_warn_explicit(PyObject *self, PyObject *args, PyObject *kwds)
         }
 
         /* Split the source into lines. */
-        source_list = PyObject_CallMethodObjArgs(source, splitlines_name,
-                                                    NULL);
+        source_list = PyObject_CallMethodObjArgs(source,
+                                                 PyId_splitlines.object,
+                                                 NULL);
         Py_DECREF(source);
         if (!source_list)
             return NULL;
@@ -888,7 +906,6 @@ create_filter(PyObject *category, const char *action)
 static PyObject *
 init_filters(void)
 {
-    /* Don't silence DeprecationWarning if -3 was used. */
     PyObject *filters = PyList_New(5);
     unsigned int pos = 0;  /* Post-incremented in each use. */
     unsigned int x;
@@ -951,23 +968,30 @@ _PyWarnings_Init(void)
     if (m == NULL)
         return NULL;
 
-    _filters = init_filters();
-    if (_filters == NULL)
-        return NULL;
+    if (_filters == NULL) {
+        _filters = init_filters();
+        if (_filters == NULL)
+            return NULL;
+    }
     Py_INCREF(_filters);
     if (PyModule_AddObject(m, "filters", _filters) < 0)
         return NULL;
 
-    _once_registry = PyDict_New();
-    if (_once_registry == NULL)
-        return NULL;
+    if (_once_registry == NULL) {
+        _once_registry = PyDict_New();
+        if (_once_registry == NULL)
+            return NULL;
+    }
     Py_INCREF(_once_registry);
     if (PyModule_AddObject(m, "_onceregistry", _once_registry) < 0)
         return NULL;
 
-    _default_action = PyUnicode_FromString("default");
-    if (_default_action == NULL)
-        return NULL;
+    if (_default_action == NULL) {
+        _default_action = PyUnicode_FromString("default");
+        if (_default_action == NULL)
+            return NULL;
+    }
+    Py_INCREF(_default_action);
     if (PyModule_AddObject(m, "_defaultaction", _default_action) < 0)
         return NULL;
     return m;

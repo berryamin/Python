@@ -32,7 +32,7 @@ symtable_symtable(PyObject *self, PyObject *args)
     st = Py_SymtableString(str, filename, start);
     if (st == NULL)
         return NULL;
-    t = st->st_blocks;
+    t = (PyObject *)st->st_top;
     Py_INCREF(t);
     PyMem_Free((void *)st->st_future);
     PySymtable_Free(st);
@@ -62,6 +62,9 @@ PyMODINIT_FUNC
 PyInit__symtable(void)
 {
     PyObject *m;
+
+    if (PyType_Ready(&PySTEntry_Type) < 0)
+        return NULL;
 
     m = PyModule_Create(&symtablemodule);
     if (m == NULL)

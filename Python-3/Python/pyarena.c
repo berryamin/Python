@@ -10,19 +10,8 @@
    allocation?
 */
 
-
-#ifndef __QNXNTO__
-#define DEFAULT_BLOCK_SIZE      8192
-#else
-#include <sys/mman.h>
-/* export PYTHON_IMPORT_ARENA_SIZE=<even byte number> */
-int     python_import_arena_size_g =  16384;
-#define DEFAULT_BLOCK_SIZE      16384 
-#endif
-
+#define DEFAULT_BLOCK_SIZE 8192
 #define ALIGNMENT               8
-#define ALIGNMENT_MASK          (ALIGNMENT - 1)
-#define ROUNDUP(x)              (((x) + ALIGNMENT_MASK) & ~ALIGNMENT_MASK)
 
 typedef struct _block {
     /* Total number of bytes owned by this block available to pass out.
@@ -88,22 +77,14 @@ block_new(size_t size)
 {
     /* Allocate header and block as one unit.
        ab_mem points just past header. */
-
-#ifndef __QNXNTO__
     block *b = (block *)malloc(sizeof(block) + size);
     if (!b)
         return NULL;
-#else
-    block *b = (block *)mmap(0, sizeof(block) + size , PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON, NOFD, 0);
-    if (b == MAP_FAILED)
-        return NULL;
-#endif
-
     b->ab_size = size;
     b->ab_mem = (void *)(b + 1);
     b->ab_next = NULL;
-    b->ab_offset = ROUNDUP((Py_uintptr_t)(b->ab_mem)) -
-      (Py_uintptr_t)(b->ab_mem);
+    b->ab_offset = (char *)_Py_ALIGN_UP(b->ab_mem, ALIGNMENT) -
+            (char *)(b->ab_mem);
     return b;
 }
 
@@ -111,11 +92,7 @@ static void
 block_free(block *b) {
     while (b) {
         block *next = b->ab_next;
-#ifndef __QNXNTO__
         free(b);
-#else
-        munmap( (void*)b, python_import_arena_size_g );
-#endif
         b = next;
     }
 }
@@ -125,7 +102,7 @@ block_alloc(block *b, size_t size)
 {
     void *p;
     assert(b);
-    size = ROUNDUP(size);
+    size = _Py_SIZE_ROUND_UP(size, ALIGNMENT);
     if (b->ab_offset + size > b->ab_size) {
         /* If we need to allocate more memory than will fit in
            the default block, allocate a one-off block that is
@@ -150,35 +127,20 @@ block_alloc(block *b, size_t size)
 PyArena *
 PyArena_New()
 {
-
-#ifndef __QNXNTO__
     PyArena* arena = (PyArena *)malloc(sizeof(PyArena));
     if (!arena)
         return (PyArena*)PyErr_NoMemory();
-#else
-    PyArena* arena = (PyArena *)mmap(0, python_import_arena_size_g, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON, NOFD, 0);
-    if (arena == MAP_FAILED)
-        return(PyArena*)PyErr_NoMemory();
-#endif
 
     arena->a_head = block_new(DEFAULT_BLOCK_SIZE);
     arena->a_cur = arena->a_head;
     if (!arena->a_head) {
-#ifndef __QNXNTO__
         free((void *)arena);
-#else
-        munmap((void *)arena, python_import_arena_size_g );
-#endif
         return (PyArena*)PyErr_NoMemory();
     }
     arena->a_objects = PyList_New(0);
     if (!arena->a_objects) {
         block_free(arena->a_head);
-#ifndef __QNXNTO__
         free((void *)arena);
-#else
-        munmap((void *)arena, python_import_arena_size_g );
-#endif
         return (PyArena*)PyErr_NoMemory();
     }
 #if defined(Py_DEBUG)
@@ -194,7 +156,6 @@ PyArena_New()
 void
 PyArena_Free(PyArena *arena)
 {
-    int r;
     assert(arena);
 #if defined(Py_DEBUG)
     /*
@@ -211,18 +172,8 @@ PyArena_Free(PyArena *arena)
     assert(arena->a_objects->ob_refcnt == 1);
     */
 
-    /* Clear all the elements from the list.  This is necessary
-       to guarantee that they will be DECREFed. */
-    r = PyList_SetSlice(arena->a_objects,
-                        0, PyList_GET_SIZE(arena->a_objects), NULL);
-    assert(r == 0);
-    assert(PyList_GET_SIZE(arena->a_objects) == 0);
     Py_DECREF(arena->a_objects);
-#ifndef __QNXNTO__
     free(arena);
-#else
-    munmap( (void*)arena, python_import_arena_size_g );
-#endif
 }
 
 void *

@@ -183,6 +183,44 @@ static unsigned short crctab_hqx[256] = {
     0x6e17, 0x7e36, 0x4e55, 0x5e74, 0x2e93, 0x3eb2, 0x0ed1, 0x1ef0,
 };
 
+static int
+ascii_buffer_converter(PyObject *arg, Py_buffer *buf)
+{
+    if (arg == NULL) {
+        PyBuffer_Release(buf);
+        return 1;
+    }
+    if (PyUnicode_Check(arg)) {
+        if (PyUnicode_READY(arg) < 0)
+            return 0;
+        if (!PyUnicode_IS_ASCII(arg)) {
+            PyErr_SetString(PyExc_ValueError,
+                            "string argument should contain only ASCII characters");
+            return 0;
+        }
+        assert(PyUnicode_KIND(arg) == PyUnicode_1BYTE_KIND);
+        buf->buf = (void *) PyUnicode_1BYTE_DATA(arg);
+        buf->len = PyUnicode_GET_LENGTH(arg);
+        buf->obj = NULL;
+        return 1;
+    }
+    if (PyObject_GetBuffer(arg, buf, PyBUF_SIMPLE) != 0) {
+        PyErr_Format(PyExc_TypeError,
+                     "argument should be bytes, buffer or ASCII string, "
+                     "not %R", Py_TYPE(arg));
+        return 0;
+    }
+    if (!PyBuffer_IsContiguous(buf, 'C')) {
+        PyErr_Format(PyExc_TypeError,
+                     "argument should be a contiguous buffer, "
+                     "not %R", Py_TYPE(arg));
+        PyBuffer_Release(buf);
+        return 0;
+    }
+    return Py_CLEANUP_SUPPORTED;
+}
+
+
 PyDoc_STRVAR(doc_a2b_uu, "(ascii) -> bin. Decode a line of uuencoded data");
 
 static PyObject *
@@ -196,7 +234,7 @@ binascii_a2b_uu(PyObject *self, PyObject *args)
     PyObject *rv;
     Py_ssize_t ascii_len, bin_len;
 
-    if ( !PyArg_ParseTuple(args, "y*:a2b_uu", &pascii) )
+    if ( !PyArg_ParseTuple(args, "O&:a2b_uu", ascii_buffer_converter, &pascii) )
         return NULL;
     ascii_data = pascii.buf;
     ascii_len = pascii.len;
@@ -370,7 +408,7 @@ binascii_a2b_base64(PyObject *self, PyObject *args)
     Py_ssize_t ascii_len, bin_len;
     int quad_pos = 0;
 
-    if ( !PyArg_ParseTuple(args, "y*:a2b_base64", &pascii) )
+    if ( !PyArg_ParseTuple(args, "O&:a2b_base64", ascii_buffer_converter, &pascii) )
         return NULL;
     ascii_data = pascii.buf;
     ascii_len = pascii.len;
@@ -546,7 +584,7 @@ binascii_a2b_hqx(PyObject *self, PyObject *args)
     Py_ssize_t len;
     int done = 0;
 
-    if ( !PyArg_ParseTuple(args, "y*:a2b_hqx", &pascii) )
+    if ( !PyArg_ParseTuple(args, "O&:a2b_hqx", ascii_buffer_converter, &pascii) )
         return NULL;
     ascii_data = pascii.buf;
     len = pascii.len;
@@ -1078,13 +1116,11 @@ binascii_hexlify(PyObject *self, PyObject *args)
 
     /* make hex version of string, taken from shamodule.c */
     for (i=j=0; i < arglen; i++) {
-        char c;
+        unsigned char c;
         c = (argbuf[i] >> 4) & 0xf;
-        c = (c>9) ? c+'a'-10 : c + '0';
-        retbuf[j++] = c;
+        retbuf[j++] = Py_hexdigits[c];
         c = argbuf[i] & 0xf;
-        c = (c>9) ? c+'a'-10 : c + '0';
-        retbuf[j++] = c;
+        retbuf[j++] = Py_hexdigits[c];
     }
     PyBuffer_Release(&parg);
     return retval;
@@ -1093,17 +1129,18 @@ binascii_hexlify(PyObject *self, PyObject *args)
 PyDoc_STRVAR(doc_hexlify,
 "b2a_hex(data) -> s; Hexadecimal representation of binary data.\n\
 \n\
-This function is also available as \"hexlify()\".");
+The return value is a bytes object.  This function is also\n\
+available as \"hexlify()\".");
 
 
 static int
 to_int(int c)
 {
-    if (isdigit(c))
+    if (Py_ISDIGIT(c))
         return c - '0';
     else {
-        if (isupper(c))
-            c = tolower(c);
+        if (Py_ISUPPER(c))
+            c = Py_TOLOWER(c);
         if (c >= 'a' && c <= 'f')
             return c - 'a' + 10;
     }
@@ -1121,7 +1158,7 @@ binascii_unhexlify(PyObject *self, PyObject *args)
     char* retbuf;
     Py_ssize_t i, j;
 
-    if (!PyArg_ParseTuple(args, "y*:a2b_hex", &parg))
+    if (!PyArg_ParseTuple(args, "O&:a2b_hex", ascii_buffer_converter, &parg))
         return NULL;
     argbuf = parg.buf;
     arglen = parg.len;
@@ -1199,8 +1236,8 @@ binascii_a2b_qp(PyObject *self, PyObject *args, PyObject *kwargs)
     static char *kwlist[] = {"data", "header", NULL};
     int header = 0;
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "y*|i", kwlist, &pdata,
-          &header))
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O&|i:a2b_qp", kwlist,
+                                     ascii_buffer_converter, &pdata, &header))
         return NULL;
     data = pdata.buf;
     datalen = pdata.len;
@@ -1328,6 +1365,7 @@ binascii_b2a_qp (PyObject *self, PyObject *args, PyObject *kwargs)
     /* First, scan to see how many characters need to be encoded */
     in = 0;
     while (in < datalen) {
+        Py_ssize_t delta = 0;
         if ((data[in] > 126) ||
             (data[in] == '=') ||
             (header && data[in] == '_') ||
@@ -1342,12 +1380,12 @@ binascii_b2a_qp (PyObject *self, PyObject *args, PyObject *kwargs)
             if ((linelen + 3) >= MAXLINESIZE) {
                 linelen = 0;
                 if (crlf)
-                    odatalen += 3;
+                    delta += 3;
                 else
-                    odatalen += 2;
+                    delta += 2;
             }
             linelen += 3;
-            odatalen += 3;
+            delta += 3;
             in++;
         }
         else {
@@ -1359,11 +1397,11 @@ binascii_b2a_qp (PyObject *self, PyObject *args, PyObject *kwargs)
                 linelen = 0;
                 /* Protect against whitespace on end of line */
                 if (in && ((data[in-1] == ' ') || (data[in-1] == '\t')))
-                    odatalen += 2;
+                    delta += 2;
                 if (crlf)
-                    odatalen += 2;
+                    delta += 2;
                 else
-                    odatalen += 1;
+                    delta += 1;
                 if (data[in] == '\r')
                     in += 2;
                 else
@@ -1375,15 +1413,21 @@ binascii_b2a_qp (PyObject *self, PyObject *args, PyObject *kwargs)
                     (linelen + 1) >= MAXLINESIZE) {
                     linelen = 0;
                     if (crlf)
-                        odatalen += 3;
+                        delta += 3;
                     else
-                        odatalen += 2;
+                        delta += 2;
                 }
                 linelen++;
-                odatalen++;
+                delta++;
                 in++;
             }
         }
+        if (PY_SSIZE_T_MAX - delta < odatalen) {
+            PyBuffer_Release(&pdata);
+            PyErr_NoMemory();
+            return NULL;
+        }
+        odatalen += delta;
     }
 
     /* We allocate the output same size as input, this is overkill.

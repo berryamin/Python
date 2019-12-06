@@ -2,7 +2,8 @@
 
 Implements the Distutils 'build_py' command."""
 
-import sys, os
+import os
+import imp
 import sys
 from glob import glob
 
@@ -126,7 +127,8 @@ class build_py (Command):
             # Each pattern has to be converted to a platform-specific path
             filelist = glob(os.path.join(src_dir, convert_path(pattern)))
             # Files that match more than one pattern are only added once
-            files.extend([fn for fn in filelist if fn not in files])
+            files.extend([fn for fn in filelist if fn not in files
+                and os.path.isfile(fn)])
         return files
 
     def build_package_data(self):
@@ -311,9 +313,11 @@ class build_py (Command):
             outputs.append(filename)
             if include_bytecode:
                 if self.compile:
-                    outputs.append(filename + "c")
+                    outputs.append(imp.cache_from_source(filename,
+                                                         debug_override=True))
                 if self.optimize > 0:
-                    outputs.append(filename + "o")
+                    outputs.append(imp.cache_from_source(filename,
+                                                         debug_override=False))
 
         outputs += [
             os.path.join(build_dir, filename)

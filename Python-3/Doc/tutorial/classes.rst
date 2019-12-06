@@ -168,7 +168,6 @@ binding::
        def do_global():
            global spam
            spam = "global spam"
-
        spam = "test spam"
        do_local()
        print("After local assignment:", spam)
@@ -180,7 +179,9 @@ binding::
    scope_test()
    print("In global scope:", spam)
 
-The output of the example code is::
+The output of the example code is:
+
+.. code-block:: none
 
    After local assignment: test spam
    After nonlocal assignment: nonlocal spam
@@ -458,8 +459,8 @@ argument::
            self.add(x)
 
 Methods may reference global names in the same way as ordinary functions.  The
-global scope associated with a method is the module containing the class
-definition.  (The class itself is never used as a global scope.)  While one
+global scope associated with a method is the module containing its
+definition.  (A class is never used as a global scope.)  While one
 rarely encounters a good reason for using global data in a method, there are
 many legitimate uses of the global scope: for one thing, functions and modules
 imported into the global scope can be used by methods, as well as functions and
@@ -651,7 +652,7 @@ will do nicely::
 A piece of Python code that expects a particular abstract data type can often be
 passed a class that emulates the methods of that data type instead.  For
 instance, if you have a function that formats some data from a file object, you
-can define a class with methods :meth:`read` and :meth:`readline` that get the
+can define a class with methods :meth:`read` and :meth:`!readline` that get the
 data from a string buffer instead, and pass it as an argument.
 
 .. (Unfortunately, this technique has its limitations: a class can't define
@@ -695,9 +696,9 @@ example, the following code will print B, C, D in that order::
    class D(C):
        pass
 
-   for c in [B, C, D]:
+   for cls in [B, C, D]:
        try:
-           raise c()
+           raise cls()
        except D:
            print("D")
        except C:
@@ -735,11 +736,11 @@ using a :keyword:`for` statement::
 This style of access is clear, concise, and convenient.  The use of iterators
 pervades and unifies Python.  Behind the scenes, the :keyword:`for` statement
 calls :func:`iter` on the container object.  The function returns an iterator
-object that defines the method :meth:`__next__` which accesses elements in the
-container one at a time.  When there are no more elements, :meth:`__next__`
-raises a :exc:`StopIteration` exception which tells the :keyword:`for` loop to
-terminate.  You can call the :meth:`__next__` method using the :func:`next`
-built-in function; this example shows how it all works::
+object that defines the method :meth:`~iterator.__next__` which accesses
+elements in the container one at a time.  When there are no more elements,
+:meth:`~iterator.__next__` raises a :exc:`StopIteration` exception which tells the
+:keyword:`for` loop to terminate.  You can call the :meth:`~iterator.__next__` method
+using the :func:`next` built-in function; this example shows how it all works::
 
    >>> s = 'abc'
    >>> it = iter(s)
@@ -759,8 +760,8 @@ built-in function; this example shows how it all works::
 
 Having seen the mechanics behind the iterator protocol, it is easy to add
 iterator behavior to your classes.  Define an :meth:`__iter__` method which
-returns an object with a :meth:`__next__` method.  If the class defines
-:meth:`__next__`, then :meth:`__iter__` can just return ``self``::
+returns an object with a :meth:`~iterator.__next__` method.  If the class
+defines :meth:`__next__`, then :meth:`__iter__` can just return ``self``::
 
    class Reverse:
        """Iterator for looping over a sequence backwards."""
@@ -817,8 +818,8 @@ easy to create::
 
 Anything that can be done with generators can also be done with class based
 iterators as described in the previous section.  What makes generators so
-compact is that the :meth:`__iter__` and :meth:`__next__` methods are created
-automatically.
+compact is that the :meth:`__iter__` and :meth:`~generator.__next__` methods
+are created automatically.
 
 Another key feature is that the local variables and execution state are
 automatically saved between calls.  This made the function easier to write and

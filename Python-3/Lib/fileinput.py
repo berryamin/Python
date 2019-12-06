@@ -90,13 +90,11 @@ DEFAULT_BUFSIZE = 8*1024
 
 def input(files=None, inplace=False, backup="", bufsize=0,
           mode="r", openhook=None):
-    """input(files=None, inplace=False, backup="", bufsize=0, \
-mode="r", openhook=None)
+    """Return an instance of the FileInput class, which can be iterated.
 
-    Create an instance of the FileInput class. The instance will be used
-    as global state for the functions of this module, and is also returned
-    to use during iteration. The parameters to this function will be passed
-    along to the constructor of the FileInput class.
+    The parameters are passed to the constructor of the FileInput class.
+    The returned instance, in addition to being an iterator,
+    keeps global state for the functions of this module,.
     """
     global _state
     if _state and _state._file:
@@ -183,7 +181,7 @@ def isstdin():
     return _state.isstdin()
 
 class FileInput:
-    """class FileInput([files[, inplace[, backup[, mode[, openhook]]]]])
+    """FileInput([files[, inplace[, backup[, bufsize, [, mode[, openhook]]]]]])
 
     Class FileInput is the implementation of the module; its methods
     filename(), lineno(), fileline(), isfirstline(), isstdin(), fileno(),
@@ -225,10 +223,11 @@ class FileInput:
             raise ValueError("FileInput opening mode must be one of "
                              "'r', 'rU', 'U' and 'rb'")
         self._mode = mode
-        if inplace and openhook:
-            raise ValueError("FileInput cannot use an opening hook in inplace mode")
-        elif openhook and not hasattr(openhook, '__call__'):
-            raise ValueError("FileInput openhook must be callable")
+        if openhook:
+            if inplace:
+                raise ValueError("FileInput cannot use an opening hook in inplace mode")
+            if not callable(openhook):
+                raise ValueError("FileInput openhook must be callable")
         self._openhook = openhook
 
     def __del__(self):
@@ -397,9 +396,8 @@ def hook_compressed(filename, mode):
 
 
 def hook_encoded(encoding):
-    import codecs
     def openhook(filename, mode):
-        return codecs.open(filename, mode, encoding)
+        return open(filename, mode, encoding=encoding)
     return openhook
 
 

@@ -15,8 +15,8 @@ module implements all the required locking semantics.  It depends on the
 availability of thread support in Python; see the :mod:`threading`
 module.
 
-Implements three types of queue whose only difference is the order that
-the entries are retrieved.  In a FIFO queue, the first tasks added are
+The module implements three types of queue, which differ only in the order in
+which the entries are retrieved.  In a FIFO queue, the first tasks added are
 the first retrieved. In a LIFO queue, the most recently added entry is
 the first retrieved (operating like a stack).  With a priority queue,
 the entries are kept sorted (using the :mod:`heapq` module) and the
@@ -54,13 +54,15 @@ The :mod:`queue` module defines the following classes and exceptions:
 
 .. exception:: Empty
 
-   Exception raised when non-blocking :meth:`get` (or :meth:`get_nowait`) is called
+   Exception raised when non-blocking :meth:`~Queue.get` (or
+   :meth:`~Queue.get_nowait`) is called
    on a :class:`Queue` object which is empty.
 
 
 .. exception:: Full
 
-   Exception raised when non-blocking :meth:`put` (or :meth:`put_nowait`) is called
+   Exception raised when non-blocking :meth:`~Queue.put` (or
+   :meth:`~Queue.put_nowait`) is called
    on a :class:`Queue` object which is full.
 
 
@@ -181,6 +183,6 @@ Example of how to wait for enqueued tasks to be completed::
       context.
 
    :class:`collections.deque` is an alternative implementation of unbounded
-   queues with fast atomic :func:`append` and :func:`popleft` operations that
-   do not require locking.
+   queues with fast atomic :meth:`~collections.deque.append` and
+   :meth:`~collections.deque.popleft` operations that do not require locking.
 

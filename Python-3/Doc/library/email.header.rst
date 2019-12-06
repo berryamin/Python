@@ -1,5 +1,5 @@
-:mod:`email`: Internationalized headers
----------------------------------------
+:mod:`email.header`: Internationalized headers
+----------------------------------------------
 
 .. module:: email.header
    :synopsis: Representing non-ASCII headers
@@ -31,8 +31,8 @@ For example::
    >>> msg = Message()
    >>> h = Header('p\xf6stal', 'iso-8859-1')
    >>> msg['Subject'] = h
-   >>> print(msg.as_string())
-   Subject: =?iso-8859-1?q?p=F6stal?=
+   >>> msg.as_string()
+   'Subject: =?iso-8859-1?q?p=F6stal?=\n\n'
 
 
 
@@ -141,11 +141,11 @@ Here is the :class:`Header` class description:
       Returns an approximation of the :class:`Header` as a string, using an
       unlimited line length.  All pieces are converted to unicode using the
       specified encoding and joined together appropriately.  Any pieces with a
-      charset of `unknown-8bit` are decoded as `ASCII` using the `replace`
+      charset of ``'unknown-8bit'`` are decoded as ASCII using the ``'replace'``
       error handler.
 
       .. versionchanged:: 3.2
-         Added handling for the `unknown-8bit` charset.
+         Added handling for the ``'unknown-8bit'`` charset.
 
 
    .. method:: __eq__(other)
@@ -176,7 +176,7 @@ The :mod:`email.header` module also provides the following convenient functions.
 
       >>> from email.header import decode_header
       >>> decode_header('=?iso-8859-1?q?p=F6stal?=')
-      [('p\xf6stal', 'iso-8859-1')]
+      [(b'p\xf6stal', 'iso-8859-1')]
 
 
 .. function:: make_header(decoded_seq, maxlinelen=None, header_name=None, continuation_ws=' ')

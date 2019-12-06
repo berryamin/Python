@@ -46,9 +46,17 @@ class CheckTestCase(support.LoggingSilencer,
         cmd = self._run(metadata, strict=1)
         self.assertEqual(cmd._warnings, 0)
 
+        # now a test with non-ASCII characters
+        metadata = {'url': 'xxx', 'author': '\u00c9ric',
+                    'author_email': 'xxx', 'name': 'xxx',
+                    'version': 'xxx',
+                    'description': 'Something about esszet \u00df',
+                    'long_description': 'More things about esszet \u00df'}
+        cmd = self._run(metadata)
+        self.assertEqual(cmd._warnings, 0)
+
+    @unittest.skipUnless(HAS_DOCUTILS, "won't test without docutils")
     def test_check_document(self):
-        if not HAS_DOCUTILS: # won't test without docutils
-            return
         pkg_info, dist = self.create_dist()
         cmd = check(dist)
 
@@ -62,9 +70,8 @@ class CheckTestCase(support.LoggingSilencer,
         msgs = cmd._check_rst_data(rest)
         self.assertEqual(len(msgs), 0)
 
+    @unittest.skipUnless(HAS_DOCUTILS, "won't test without docutils")
     def test_check_restructuredtext(self):
-        if not HAS_DOCUTILS: # won't test without docutils
-            return
         # let's see if it detects broken rest in long_description
         broken_rest = 'title\n===\n\ntest'
         pkg_info, dist = self.create_dist(long_description=broken_rest)
@@ -80,8 +87,8 @@ class CheckTestCase(support.LoggingSilencer,
         self.assertRaises(DistutilsSetupError, self._run, metadata,
                           **{'strict': 1, 'restructuredtext': 1})
 
-        # and non-broken rest
-        metadata['long_description'] = 'title\n=====\n\ntest'
+        # and non-broken rest, including a non-ASCII character to test #12114
+        metadata['long_description'] = 'title\n=====\n\ntest \u00df'
         cmd = self._run(metadata, strict=1, restructuredtext=1)
         self.assertEqual(cmd._warnings, 0)
 

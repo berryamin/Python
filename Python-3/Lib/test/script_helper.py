@@ -1,9 +1,9 @@
 # Common utility functions used by various script execution tests
 #  e.g. test_cmd_line, test_cmd_line_script and test_runpy
 
+import importlib
 import sys
 import os
-import re
 import os.path
 import tempfile
 import subprocess
@@ -13,18 +13,22 @@ import shutil
 import zipfile
 
 from imp import source_from_cache
-from test.support import make_legacy_pyc, strip_python_stderr
+from test.support import make_legacy_pyc, strip_python_stderr, temp_dir
 
 # Executing the interpreter in a subprocess
 def _assert_python(expected_success, *args, **env_vars):
     cmd_line = [sys.executable]
     if not env_vars:
         cmd_line.append('-E')
-    cmd_line.extend(args)
     # Need to preserve the original environment, for in-place testing of
     # shared library builds.
     env = os.environ.copy()
+    # But a special flag that can be set to override -- in this case, the
+    # caller is responsible to pass the full environment.
+    if env_vars.pop('__cleanenv', None):
+        env = {}
     env.update(env_vars)
+    cmd_line.extend(args)
     p = subprocess.Popen(cmd_line, stdin=subprocess.PIPE,
                          stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                          env=env)
@@ -56,11 +60,12 @@ def assert_python_failure(*args, **env_vars):
     """
     return _assert_python(False, *args, **env_vars)
 
-def spawn_python(*args):
+def spawn_python(*args, **kw):
     cmd_line = [sys.executable, '-E']
     cmd_line.extend(args)
     return subprocess.Popen(cmd_line, stdin=subprocess.PIPE,
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            **kw)
 
 def kill_python(p):
     p.stdin.close()
@@ -72,16 +77,6 @@ def kill_python(p):
     subprocess._cleanup()
     return data
 
-# Script creation utilities
-@contextlib.contextmanager
-def temp_dir():
-    dirname = tempfile.mkdtemp()
-    dirname = os.path.realpath(dirname)
-    try:
-        yield dirname
-    finally:
-        shutil.rmtree(dirname)
-
 def make_script(script_dir, script_basename, source):
     script_filename = script_basename+os.extsep+'py'
     script_name = os.path.join(script_dir, script_filename)
@@ -89,6 +84,7 @@ def make_script(script_dir, script_basename, source):
     script_file = open(script_name, 'w', encoding='utf-8')
     script_file.write(source)
     script_file.close()
+    importlib.invalidate_caches()
     return script_name
 
 def make_zip_script(zip_dir, zip_basename, script_name, name_in_zip=None):

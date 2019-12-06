@@ -74,6 +74,7 @@ class BasicWrapTestCase(unittest.TestCase):
     def test_callbacks(self):
         f = dll._testfunc_callback_i_if
         f.restype = c_int
+        f.argtypes = None
 
         MyCallback = CFUNCTYPE(c_int, c_int)
 
@@ -133,7 +134,7 @@ class BasicWrapTestCase(unittest.TestCase):
         f.argtypes = [c_longlong, MyCallback]
 
         def callback(value):
-            self.assertTrue(isinstance(value, int))
+            self.assertIsInstance(value, int)
             return value & 0x7FFFFFFF
 
         cb = MyCallback(callback)

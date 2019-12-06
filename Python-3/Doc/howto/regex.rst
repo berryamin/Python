@@ -104,13 +104,25 @@ you can still match them in patterns; for example, if you need to match a ``[``
 or  ``\``, you can precede them with a backslash to remove their special
 meaning: ``\[`` or ``\\``.
 
-Some of the special sequences beginning with ``'\'`` represent predefined sets
-of characters that are often useful, such as the set of digits, the set of
-letters, or the set of anything that isn't whitespace.  The following predefined
-special sequences are a subset of those available. The equivalent classes are
-for bytes patterns. For a complete list of sequences and expanded class
-definitions for Unicode string patterns, see the last part of
-:ref:`Regular Expression Syntax <re-syntax>`.
+Some of the special sequences beginning with ``'\'`` represent
+predefined sets of characters that are often useful, such as the set
+of digits, the set of letters, or the set of anything that isn't
+whitespace.
+
+Let's take an example: ``\w`` matches any alphanumeric character.  If
+the regex pattern is expressed in bytes, this is equivalent to the
+class ``[a-zA-Z0-9_]``.  If the regex pattern is a string, ``\w`` will
+match all the characters marked as letters in the Unicode database
+provided by the :mod:`unicodedata` module.  You can use the more
+restricted definition of ``\w`` in a string pattern by supplying the
+:const:`re.ASCII` flag when compiling the regular expression.
+
+The following list of special sequences isn't complete. For a complete
+list of sequences and expanded class definitions for Unicode string
+patterns, see the last part of :ref:`Regular Expression Syntax
+<re-syntax>` in the Standard Library reference.  In general, the
+Unicode versions match any character that's in the appropriate
+category in the Unicode database.
 
 ``\d``
    Matches any decimal digit; this is equivalent to the class ``[0-9]``.
@@ -160,9 +172,8 @@ previous character can be matched zero or more times, instead of exactly once.
 For example, ``ca*t`` will match ``ct`` (0 ``a`` characters), ``cat`` (1 ``a``),
 ``caaat`` (3 ``a`` characters), and so forth.  The RE engine has various
 internal limitations stemming from the size of C's ``int`` type that will
-prevent it from matching over 2 billion ``a`` characters; you probably don't
-have enough memory to construct a string that large, so you shouldn't run into
-that limit.
+prevent it from matching over 2 billion ``a`` characters; patterns
+are usually not written to match that much data.
 
 Repetitions such as ``*`` are :dfn:`greedy`; when repeating a RE, the matching
 engine will try to repeat it as many times as possible. If later portions of the
@@ -260,7 +271,7 @@ performing string substitutions. ::
 
    >>> import re
    >>> p = re.compile('ab*')
-   >>> p
+   >>> p  #doctest: +ELLIPSIS
    <_sre.SRE_Pattern object at 0x...>
 
 :func:`re.compile` also accepts an optional *flags* argument, used to enable
@@ -353,14 +364,14 @@ for a complete listing.
 |                  | returns them as an :term:`iterator`.          |
 +------------------+-----------------------------------------------+
 
-:meth:`match` and :meth:`search` return ``None`` if no match can be found.  If
-they're successful, a ``MatchObject`` instance is returned, containing
-information about the match: where it starts and ends, the substring it matched,
-and more.
+:meth:`~re.regex.match` and :meth:`~re.regex.search` return ``None`` if no match can be found.  If
+they're successful, a :ref:`match object <match-objects>` instance is returned,
+containing information about the match: where it starts and ends, the substring
+it matched, and more.
 
 You can learn about this by interactively experimenting with the :mod:`re`
 module.  If you have :mod:`tkinter` available, you may also want to look at
-:file:`Tools/demo/redemo.py`, a demonstration program included with the
+:source:`Tools/demo/redemo.py`, a demonstration program included with the
 Python distribution.  It allows you to enter REs and strings, and displays
 whether the RE matches or fails. :file:`redemo.py` can be quite useful when
 trying to debug a complicated RE.  Phil Schwartz's `Kodos
@@ -372,7 +383,7 @@ Python interpreter, import the :mod:`re` module, and compile a RE::
 
    >>> import re
    >>> p = re.compile('[a-z]+')
-   >>> p
+   >>> p  #doctest: +ELLIPSIS
    <_sre.SRE_Pattern object at 0x...>
 
 Now, you can try matching various strings against the RE ``[a-z]+``.  An empty
@@ -386,16 +397,16 @@ interpreter to print no output.  You can explicitly print the result of
    None
 
 Now, let's try it on a string that it should match, such as ``tempo``.  In this
-case, :meth:`match` will return a :class:`MatchObject`, so you should store the
-result in a variable for later use. ::
+case, :meth:`match` will return a :ref:`match object <match-objects>`, so you
+should store the result in a variable for later use. ::
 
    >>> m = p.match('tempo')
-   >>> m
+   >>> m  #doctest: +ELLIPSIS
    <_sre.SRE_Match object at 0x...>
 
-Now you can query the :class:`MatchObject` for information about the matching
-string.   :class:`MatchObject` instances also have several methods and
-attributes; the most important ones are:
+Now you can query the :ref:`match object <match-objects>` for information
+about the matching string.  :ref:`match object <match-objects>` instances
+also have several methods and attributes; the most important ones are:
 
 +------------------+--------------------------------------------+
 | Method/Attribute | Purpose                                    |
@@ -419,8 +430,8 @@ Trying these methods will soon clarify their meaning::
    >>> m.span()
    (0, 5)
 
-:meth:`group` returns the substring that was matched by the RE.  :meth:`start`
-and :meth:`end` return the starting and ending index of the match. :meth:`span`
+:meth:`~re.match.group` returns the substring that was matched by the RE.  :meth:`~re.match.start`
+and :meth:`~re.match.end` return the starting and ending index of the match. :meth:`~re.match.span`
 returns both start and end indexes in a single tuple.  Since the :meth:`match`
 method only checks if the RE matches at the start of a string, :meth:`start`
 will always be zero.  However, the :meth:`search` method of patterns
@@ -429,15 +440,16 @@ case. ::
 
    >>> print(p.match('::: message'))
    None
-   >>> m = p.search('::: message') ; print(m)
+   >>> m = p.search('::: message'); print(m)  #doctest: +ELLIPSIS
    <_sre.SRE_Match object at 0x...>
    >>> m.group()
    'message'
    >>> m.span()
    (4, 11)
 
-In actual programs, the most common style is to store the :class:`MatchObject`
-in a variable, and then check if it was ``None``.  This usually looks like::
+In actual programs, the most common style is to store the
+:ref:`match object <match-objects>` in a variable, and then check if it was
+``None``.  This usually looks like::
 
    p = re.compile( ... )
    m = p.match( 'string goes here' )
@@ -447,18 +459,18 @@ in a variable, and then check if it was ``None``.  This usually looks like::
        print('No match')
 
 Two pattern methods return all of the matches for a pattern.
-:meth:`findall` returns a list of matching strings::
+:meth:`~re.regex.findall` returns a list of matching strings::
 
    >>> p = re.compile('\d+')
    >>> p.findall('12 drummers drumming, 11 pipers piping, 10 lords a-leaping')
    ['12', '11', '10']
 
 :meth:`findall` has to create the entire list before it can be returned as the
-result.  The :meth:`finditer` method returns a sequence of :class:`MatchObject`
-instances as an :term:`iterator`::
+result.  The :meth:`~re.regex.finditer` method returns a sequence of
+:ref:`match object <match-objects>` instances as an :term:`iterator`::
 
    >>> iterator = p.finditer('12 drummers drumming, 11 ... 10 ...')
-   >>> iterator
+   >>> iterator  #doctest: +ELLIPSIS
    <callable_iterator object at 0x...>
    >>> for match in iterator:
    ...     print(match.span())
@@ -472,38 +484,27 @@ Module-Level Functions
 ----------------------
 
 You don't have to create a pattern object and call its methods; the
-:mod:`re` module also provides top-level functions called :func:`match`,
-:func:`search`, :func:`findall`, :func:`sub`, and so forth.  These functions
-take the same arguments as the corresponding pattern method, with
+:mod:`re` module also provides top-level functions called :func:`~re.match`,
+:func:`~re.search`, :func:`~re.findall`, :func:`~re.sub`, and so forth.  These functions
+take the same arguments as the corresponding pattern method with
 the RE string added as the first argument, and still return either ``None`` or a
-:class:`MatchObject` instance. ::
+:ref:`match object <match-objects>` instance. ::
 
    >>> print(re.match(r'From\s+', 'Fromage amk'))
    None
-   >>> re.match(r'From\s+', 'From amk Thu May 14 19:12:10 1998')
+   >>> re.match(r'From\s+', 'From amk Thu May 14 19:12:10 1998')  #doctest: +ELLIPSIS
    <_sre.SRE_Match object at 0x...>
 
 Under the hood, these functions simply create a pattern object for you
-and call the appropriate method on it.  They also store the compiled object in a
-cache, so future calls using the same RE are faster.
+and call the appropriate method on it.  They also store the compiled
+object in a cache, so future calls using the same RE won't need to
+parse the pattern again and again.
 
 Should you use these module-level functions, or should you get the
-pattern and call its methods yourself?  That choice depends on how
-frequently the RE will be used, and on your personal coding style.  If the RE is
-being used at only one point in the code, then the module functions are probably
-more convenient.  If a program contains a lot of regular expressions, or re-uses
-the same ones in several locations, then it might be worthwhile to collect all
-the definitions in one place, in a section of code that compiles all the REs
-ahead of time.  To take an example from the standard library, here's an extract
-from the now deprecated :file:`xmllib.py`::
-
-   ref = re.compile( ... )
-   entityref = re.compile( ... )
-   charref = re.compile( ... )
-   starttagopen = re.compile( ... )
-
-I generally prefer to work with the compiled object, even for one-time uses, but
-few people will be as much of a purist about this as I am.
+pattern and call its methods yourself?  If you're accessing a regex
+within a loop, pre-compiling it will save a few function calls.
+Outside of loops, there's not much difference thanks to the internal
+cache.
 
 
 Compilation Flags
@@ -523,6 +524,10 @@ of each one.
 +---------------------------------+--------------------------------------------+
 | Flag                            | Meaning                                    |
 +=================================+============================================+
+| :const:`ASCII`, :const:`A`      | Makes several escapes like ``\w``, ``\b``, |
+|                                 | ``\s`` and ``\d`` match only on ASCII      |
+|                                 | characters with the respective property.   |
++---------------------------------+--------------------------------------------+
 | :const:`DOTALL`, :const:`S`     | Make ``.`` match any character, including  |
 |                                 | newlines                                   |
 +---------------------------------+--------------------------------------------+
@@ -534,11 +539,7 @@ of each one.
 |                                 | ``$``                                      |
 +---------------------------------+--------------------------------------------+
 | :const:`VERBOSE`, :const:`X`    | Enable verbose REs, which can be organized |
-|                                 | more cleanly and understandably.           |
-+---------------------------------+--------------------------------------------+
-| :const:`ASCII`, :const:`A`      | Makes several escapes like ``\w``, ``\b``, |
-|                                 | ``\s`` and ``\d`` match only on ASCII      |
-|                                 | characters with the respective property.   |
+| (for 'extended')                | more cleanly and understandably.           |
 +---------------------------------+--------------------------------------------+
 
 
@@ -557,7 +558,8 @@ of each one.
           LOCALE
    :noindex:
 
-   Make ``\w``, ``\W``, ``\b``, and ``\B``, dependent on the current locale.
+   Make ``\w``, ``\W``, ``\b``, and ``\B``, dependent on the current locale
+   instead of the Unicode database.
 
    Locales are a feature of the C library intended to help in writing programs that
    take account of language differences.  For example, if you're processing French
@@ -682,7 +684,7 @@ given location, they can obviously be matched an infinite number of times.
    For example, if you wish to match the word ``From`` only at the beginning of a
    line, the RE to use is ``^From``. ::
 
-      >>> print(re.search('^From', 'From Here to Eternity'))
+      >>> print(re.search('^From', 'From Here to Eternity'))  #doctest: +ELLIPSIS
       <_sre.SRE_Match object at 0x...>
       >>> print(re.search('^From', 'Reciting From Memory'))
       None
@@ -694,11 +696,11 @@ given location, they can obviously be matched an infinite number of times.
    Matches at the end of a line, which is defined as either the end of the string,
    or any location followed by a newline character.     ::
 
-      >>> print(re.search('}$', '{block}'))
+      >>> print(re.search('}$', '{block}'))  #doctest: +ELLIPSIS
       <_sre.SRE_Match object at 0x...>
       >>> print(re.search('}$', '{block} '))
       None
-      >>> print(re.search('}$', '{block}\n'))
+      >>> print(re.search('}$', '{block}\n'))  #doctest: +ELLIPSIS
       <_sre.SRE_Match object at 0x...>
 
    To match a literal ``'$'``, use ``\$`` or enclose it inside a character class,
@@ -723,7 +725,7 @@ given location, they can obviously be matched an infinite number of times.
    match when it's contained inside another word. ::
 
       >>> p = re.compile(r'\bclass\b')
-      >>> print(p.search('no class at all'))
+      >>> print(p.search('no class at all'))  #doctest: +ELLIPSIS
       <_sre.SRE_Match object at 0x...>
       >>> print(p.search('the declassified algorithm'))
       None
@@ -741,7 +743,7 @@ given location, they can obviously be matched an infinite number of times.
       >>> p = re.compile('\bclass\b')
       >>> print(p.search('no class at all'))
       None
-      >>> print(p.search('\b' + 'class' + '\b')  )
+      >>> print(p.search('\b' + 'class' + '\b'))  #doctest: +ELLIPSIS
       <_sre.SRE_Match object at 0x...>
 
    Second, inside a character class, where there's no use for this assertion,
@@ -786,9 +788,9 @@ Groups indicated with ``'('``, ``')'`` also capture the starting and ending
 index of the text that they match; this can be retrieved by passing an argument
 to :meth:`group`, :meth:`start`, :meth:`end`, and :meth:`span`.  Groups are
 numbered starting with 0.  Group 0 is always present; it's the whole RE, so
-:class:`MatchObject` methods all have group 0 as their default argument.  Later
-we'll see how to express groups that don't capture the span of text that they
-match. ::
+:ref:`match object <match-objects>` methods all have group 0 as their default
+argument.  Later we'll see how to express groups that don't capture the span
+of text that they match. ::
 
    >>> p = re.compile('(a)b')
    >>> m = p.match('ab')
@@ -850,11 +852,10 @@ keep track of the group numbers.  There are two features which help with this
 problem.  Both of them use a common syntax for regular expression extensions, so
 we'll look at that first.
 
-Perl 5 added several additional features to standard regular expressions, and
-the Python :mod:`re` module supports most of them.   It would have been
-difficult to choose new single-keystroke metacharacters or new special sequences
-beginning with ``\`` to represent the new features without making Perl's regular
-expressions confusingly different from standard REs.  If you chose ``&`` as a
+Perl 5 is well-known for its powerful additions to standard regular expressions.
+For these new features the Perl developers couldn't choose new single-keystroke metacharacters
+or new special sequences beginning with ``\`` without making Perl's regular
+expressions confusingly different from standard REs.  If they chose ``&`` as a
 new metacharacter, for example, old expressions would be assuming that ``&`` was
 a regular character and wouldn't have escaped it by writing ``\&`` or ``[&]``.
 
@@ -866,22 +867,15 @@ what extension is being used, so ``(?=foo)`` is one thing (a positive lookahead
 assertion) and ``(?:foo)`` is something else (a non-capturing group containing
 the subexpression ``foo``).
 
-Python adds an extension syntax to Perl's extension syntax.  If the first
-character after the question mark is a ``P``, you know that it's an extension
-that's specific to Python.  Currently there are two such extensions:
-``(?P<name>...)`` defines a named group, and ``(?P=name)`` is a backreference to
-a named group.  If future versions of Perl 5 add similar features using a
-different syntax, the :mod:`re` module will be changed to support the new
-syntax, while preserving the Python-specific syntax for compatibility's sake.
+Python supports several of Perl's extensions and adds an extension
+syntax to Perl's extension syntax.  If the first character after the
+question mark is a ``P``, you know that it's an extension that's
+specific to Python.
 
-Now that we've looked at the general extension syntax, we can return to the
-features that simplify working with groups in complex REs. Since groups are
-numbered from left to right and a complex expression may use many groups, it can
-become difficult to keep track of the correct numbering.  Modifying such a
-complex RE is annoying, too: insert a new group near the beginning and you
-change the numbers of everything that follows it.
+Now that we've looked at the general extension syntax, we can return
+to the features that simplify working with groups in complex REs.
 
-Sometimes you'll want to use a group to collect a part of a regular expression,
+Sometimes you'll want to use a group to denote a part of a regular expression,
 but aren't interested in retrieving the group's contents. You can make this fact
 explicit by using a non-capturing group: ``(?:...)``, where you can replace the
 ``...`` with any other regular expression. ::
@@ -907,11 +901,11 @@ numbers, groups can be referenced by a name.
 
 The syntax for a named group is one of the Python-specific extensions:
 ``(?P<name>...)``.  *name* is, obviously, the name of the group.  Named groups
-also behave exactly like capturing groups, and additionally associate a name
-with a group.  The :class:`MatchObject` methods that deal with capturing groups
-all accept either integers that refer to the group by number or strings that
-contain the desired group's name.  Named groups are still given numbers, so you
-can retrieve information about a group in two ways::
+behave exactly like capturing groups, and additionally associate a name
+with a group.  The :ref:`match object <match-objects>` methods that deal with
+capturing groups all accept either integers that refer to the group by number
+or strings that contain the desired group's name.  Named groups are still
+given numbers, so you can retrieve information about a group in two ways::
 
    >>> p = re.compile(r'(?P<word>\b\w+\b)')
    >>> m = p.search( '(((( Lots of punctuation )))' )
@@ -974,9 +968,10 @@ The pattern to match this is quite simple:
 ``.*[.].*$``
 
 Notice that the ``.`` needs to be treated specially because it's a
-metacharacter; I've put it inside a character class.  Also notice the trailing
-``$``; this is added to ensure that all the rest of the string must be included
-in the extension.  This regular expression matches ``foo.bar`` and
+metacharacter, so it's inside a character class to only match that
+specific character.  Also notice the trailing ``$``; this is added to
+ensure that all the rest of the string must be included in the
+extension.  This regular expression matches ``foo.bar`` and
 ``autoexec.bat`` and ``sendmail.cf`` and ``printers.conf``.
 
 Now, consider complicating the problem a bit; what if you want to match
@@ -1050,7 +1045,7 @@ Splitting Strings
 The :meth:`split` method of a pattern splits a string apart
 wherever the RE matches, returning a list of the pieces. It's similar to the
 :meth:`split` method of strings but provides much more generality in the
-delimiters that you can split by; :meth:`split` only supports splitting by
+delimiters that you can split by; string :meth:`split` only supports splitting by
 whitespace or by a fixed string.  As you'd expect, there's a module-level
 :func:`re.split` function, too.
 
@@ -1104,7 +1099,6 @@ Search and Replace
 Another common task is to find all the matches for a pattern, and replace them
 with a different string.  The :meth:`sub` method takes a replacement value,
 which can be either a string or a function, and the string to be processed.
-
 
 .. method:: .sub(replacement, string[, count=0])
    :noindex:
@@ -1175,16 +1169,16 @@ three variations of the replacement string. ::
 
 *replacement* can also be a function, which gives you even more control.  If
 *replacement* is a function, the function is called for every non-overlapping
-occurrence of *pattern*.  On each call, the function is  passed a
-:class:`MatchObject` argument for the match and can use this information to
-compute the desired replacement string and return it.
+occurrence of *pattern*.  On each call, the function is passed a
+:ref:`match object <match-objects>` argument for the match and can use this
+information to compute the desired replacement string and return it.
 
-In the following example, the replacement function translates  decimals into
+In the following example, the replacement function translates decimals into
 hexadecimal::
 
-   >>> def hexrepl( match ):
+   >>> def hexrepl(match):
    ...     "Return the hex string for a decimal number"
-   ...     value = int( match.group() )
+   ...     value = int(match.group())
    ...     return hex(value)
    ...
    >>> p = re.compile(r'\d+')
@@ -1361,4 +1355,3 @@ and doesn't contain any Python material at all, so it won't be useful as a
 reference for programming in Python.  (The first edition covered Python's
 now-removed :mod:`regex` module, which won't help you much.)  Consider checking
 it out from your library.
-

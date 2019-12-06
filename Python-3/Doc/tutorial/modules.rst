@@ -72,7 +72,8 @@ More on Modules
 
 A module can contain executable statements as well as function definitions.
 These statements are intended to initialize the module. They are executed only
-the *first* time the module is imported somewhere. [#]_
+the *first* time the module name is encountered in an import statement. [#]_
+(They are also run if the file is executed as a script.)
 
 Each module has its own private symbol table, which is used as the global symbol
 table by all functions defined in the module. Thus, the author of a module can
@@ -159,24 +160,22 @@ The Module Search Path
 
 .. index:: triple: module; search; path
 
-When a module named :mod:`spam` is imported, the interpreter searches for a
-file named :file:`spam.py` in the directory containing the input script and
-then in the list of directories specified by the environment variable
-:envvar:`PYTHONPATH`.  This has the same syntax as the shell variable
-:envvar:`PATH`, that is, a list of directory names.  When :envvar:`PYTHONPATH`
-is not set, or when the file is not found there, the search continues in an
-installation-dependent default path; on Unix, this is usually
-:file:`.:/usr/local/lib/python`.
+When a module named :mod:`spam` is imported, the interpreter first searches for
+a built-in module with that name. If not found, it then searches for a file
+named :file:`spam.py` in a list of directories given by the variable
+:data:`sys.path`.  :data:`sys.path` is initialized from these locations:
 
-Actually, modules are searched in the list of directories given by the variable
-``sys.path`` which is initialized from the directory containing the input script
-(or the current directory), :envvar:`PYTHONPATH` and the installation- dependent
-default.  This allows Python programs that know what they're doing to modify or
-replace the module search path.  Note that because the directory containing the
-script being run is on the search path, it is important that the script not have
-the same name as a standard module, or Python will attempt to load the script as
-a module when that module is imported. This will generally be an error.  See
-section :ref:`tut-standardmodules` for more information.
+* the directory containing the input script (or the current directory).
+* :envvar:`PYTHONPATH` (a list of directory names, with the same syntax as the
+  shell variable :envvar:`PATH`).
+* the installation-dependent default.
+
+After initialization, Python programs can modify :data:`sys.path`.  The
+directory containing the script being run is placed at the beginning of the
+search path, ahead of the standard library path. This means that scripts in that
+directory will be loaded instead of modules of the same name in the library
+directory. This is an error unless the replacement is intended.  See section
+:ref:`tut-standardmodules` for more information.
 
 .. %
     Do we need stuff on zip files etc. ? DUBOIS
@@ -184,57 +183,45 @@ section :ref:`tut-standardmodules` for more information.
 "Compiled" Python files
 -----------------------
 
-As an important speed-up of the start-up time for short programs that use a lot
-of standard modules, if a file called :file:`spam.pyc` exists in the directory
-where :file:`spam.py` is found, this is assumed to contain an
-already-"byte-compiled" version of the module :mod:`spam`. The modification time
-of the version of :file:`spam.py` used to create :file:`spam.pyc` is recorded in
-:file:`spam.pyc`, and the :file:`.pyc` file is ignored if these don't match.
+To speed up loading modules, Python caches the compiled version of each module
+in the ``__pycache__`` directory under the name :file:`module.{version}.pyc`,
+where the version encodes the format of the compiled file; it generally contains
+the Python version number.  For example, in CPython release 3.3 the compiled
+version of spam.py would be cached as ``__pycache__/spam.cpython-33.pyc``.  This
+naming convention allows compiled modules from different releases and different
+versions of Python to coexist.
 
-Normally, you don't need to do anything to create the :file:`spam.pyc` file.
-Whenever :file:`spam.py` is successfully compiled, an attempt is made to write
-the compiled version to :file:`spam.pyc`.  It is not an error if this attempt
-fails; if for any reason the file is not written completely, the resulting
-:file:`spam.pyc` file will be recognized as invalid and thus ignored later.  The
-contents of the :file:`spam.pyc` file are platform independent, so a Python
-module directory can be shared by machines of different architectures.
+Python checks the modification date of the source against the compiled version
+to see if it's out of date and needs to be recompiled.  This is a completely
+automatic process.  Also, the compiled modules are platform-independent, so the
+same library can be shared among systems with different architectures.
+
+Python does not check the cache in two circumstances.  First, it always
+recompiles and does not store the result for the module that's loaded directly
+from the command line.  Second, it does not check the cache if there is no
+source module.  To support a non-source (compiled only) distribution, the
+compiled module must be in the source directory, and there must not be a source
+module.
 
 Some tips for experts:
 
-* When the Python interpreter is invoked with the :option:`-O` flag, optimized
-  code is generated and stored in :file:`.pyo` files.  The optimizer currently
-  doesn't help much; it only removes :keyword:`assert` statements.  When
-  :option:`-O` is used, *all* :term:`bytecode` is optimized; ``.pyc`` files are
-  ignored and ``.py`` files are compiled to optimized bytecode.
+* You can use the :option:`-O` or :option:`-OO` switches on the Python command
+  to reduce the size of a compiled module.  The ``-O`` switch removes assert
+  statements, the ``-OO`` switch removes both assert statements and __doc__
+  strings.  Since some programs may rely on having these available, you should
+  only use this option if you know what you're doing.  "Optimized" modules have
+  a .pyo rather than a .pyc suffix and are usually smaller.  Future releases may
+  change the effects of optimization.
 
-* Passing two :option:`-O` flags to the Python interpreter (:option:`-OO`) will
-  cause the bytecode compiler to perform optimizations that could in some rare
-  cases result in malfunctioning programs.  Currently only ``__doc__`` strings are
-  removed from the bytecode, resulting in more compact :file:`.pyo` files.  Since
-  some programs may rely on having these available, you should only use this
-  option if you know what you're doing.
+* A program doesn't run any faster when it is read from a ``.pyc`` or ``.pyo``
+  file than when it is read from a ``.py`` file; the only thing that's faster
+  about ``.pyc`` or ``.pyo`` files is the speed with which they are loaded.
 
-* A program doesn't run any faster when it is read from a :file:`.pyc` or
-  :file:`.pyo` file than when it is read from a :file:`.py` file; the only thing
-  that's faster about :file:`.pyc` or :file:`.pyo` files is the speed with which
-  they are loaded.
+* The module :mod:`compileall` can create .pyc files (or .pyo files when
+  :option:`-O` is used) for all modules in a directory.
 
-* When a script is run by giving its name on the command line, the bytecode for
-  the script is never written to a :file:`.pyc` or :file:`.pyo` file.  Thus, the
-  startup time of a script may be reduced by moving most of its code to a module
-  and having a small bootstrap script that imports that module.  It is also
-  possible to name a :file:`.pyc` or :file:`.pyo` file directly on the command
-  line.
-
-* It is possible to have a file called :file:`spam.pyc` (or :file:`spam.pyo`
-  when :option:`-O` is used) without a file :file:`spam.py` for the same module.
-  This can be used to distribute a library of Python code in a form that is
-  moderately hard to reverse engineer.
-
-  .. index:: module: compileall
-
-* The module :mod:`compileall` can create :file:`.pyc` files (or :file:`.pyo`
-  files when :option:`-O` is used) for all modules in a directory.
+* There is more detail on this process, including a flow chart of the
+  decisions, in PEP 3147.
 
 
 .. _tut-standardmodules:
@@ -250,7 +237,7 @@ modules are built into the interpreter; these provide access to operations that
 are not part of the core of the language but are nevertheless built in, either
 for efficiency or to provide access to operating system primitives such as
 system calls.  The set of such modules is a configuration option which also
-depends on the underlying platform For example, the :mod:`winreg` module is only
+depends on the underlying platform.  For example, the :mod:`winreg` module is only
 provided on Windows systems. One particular module deserves some attention:
 :mod:`sys`, which is built into every Python interpreter.  The variables
 ``sys.ps1`` and ``sys.ps2`` define the strings used as primary and secondary
@@ -290,17 +277,25 @@ defines.  It returns a sorted list of strings::
    >>> import fibo, sys
    >>> dir(fibo)
    ['__name__', 'fib', 'fib2']
-   >>> dir(sys)
-   ['__displayhook__', '__doc__', '__excepthook__', '__name__', '__stderr__',
-    '__stdin__', '__stdout__', '_getframe', 'api_version', 'argv',
-    'builtin_module_names', 'byteorder', 'callstats', 'copyright',
-    'displayhook', 'exc_info', 'excepthook',
-    'exec_prefix', 'executable', 'exit', 'getdefaultencoding', 'getdlopenflags',
-    'getrecursionlimit', 'getrefcount', 'hexversion', 'maxint', 'maxunicode',
+   >>> dir(sys)  # doctest: +NORMALIZE_WHITESPACE
+   ['__displayhook__', '__doc__', '__egginsert', '__excepthook__',
+    '__loader__', '__name__', '__package__', '__plen', '__stderr__',
+    '__stdin__', '__stdout__', '_clear_type_cache', '_current_frames',
+    '_debugmallocstats', '_getframe', '_home', '_mercurial', '_xoptions',
+    'abiflags', 'api_version', 'argv', 'base_exec_prefix', 'base_prefix',
+    'builtin_module_names', 'byteorder', 'call_tracing', 'callstats',
+    'copyright', 'displayhook', 'dont_write_bytecode', 'exc_info',
+    'excepthook', 'exec_prefix', 'executable', 'exit', 'flags', 'float_info',
+    'float_repr_style', 'getcheckinterval', 'getdefaultencoding',
+    'getdlopenflags', 'getfilesystemencoding', 'getobjects', 'getprofile',
+    'getrecursionlimit', 'getrefcount', 'getsizeof', 'getswitchinterval',
+    'gettotalrefcount', 'gettrace', 'hash_info', 'hexversion',
+    'implementation', 'int_info', 'intern', 'maxsize', 'maxunicode',
     'meta_path', 'modules', 'path', 'path_hooks', 'path_importer_cache',
-    'platform', 'prefix', 'ps1', 'ps2', 'setcheckinterval', 'setdlopenflags',
-    'setprofile', 'setrecursionlimit', 'settrace', 'stderr', 'stdin', 'stdout',
-    'version', 'version_info', 'warnoptions']
+    'platform', 'prefix', 'ps1', 'setcheckinterval', 'setdlopenflags',
+    'setprofile', 'setrecursionlimit', 'setswitchinterval', 'settrace',
+    'stderr', 'stdin', 'stdout', 'thread_info', 'version', 'version_info',
+    'warnoptions']
 
 Without arguments, :func:`dir` lists the names you have defined currently::
 
@@ -308,7 +303,7 @@ Without arguments, :func:`dir` lists the names you have defined currently::
    >>> import fibo
    >>> fib = fibo.fib
    >>> dir()
-   ['__builtins__', '__doc__', '__file__', '__name__', 'a', 'fib', 'fibo', 'sys']
+   ['__builtins__', '__name__', 'a', 'fib', 'fibo', 'sys']
 
 Note that it lists all types of names: variables, modules, functions, etc.
 
@@ -319,28 +314,36 @@ want a list of those, they are defined in the standard module
 :mod:`builtins`::
 
    >>> import builtins
-   >>> dir(builtins)
-
-   ['ArithmeticError', 'AssertionError', 'AttributeError', 'BaseException', 'Buffer
-   Error', 'BytesWarning', 'DeprecationWarning', 'EOFError', 'Ellipsis', 'Environme
-   ntError', 'Exception', 'False', 'FloatingPointError', 'FutureWarning', 'Generato
-   rExit', 'IOError', 'ImportError', 'ImportWarning', 'IndentationError', 'IndexErr
-   or', 'KeyError', 'KeyboardInterrupt', 'LookupError', 'MemoryError', 'NameError',
-    'None', 'NotImplemented', 'NotImplementedError', 'OSError', 'OverflowError', 'P
-   endingDeprecationWarning', 'ReferenceError', 'RuntimeError', 'RuntimeWarning', '
-   StopIteration', 'SyntaxError', 'SyntaxWarning', 'SystemError', 'SystemExit', 'Ta
-   bError', 'True', 'TypeError', 'UnboundLocalError', 'UnicodeDecodeError', 'Unicod
-   eEncodeError', 'UnicodeError', 'UnicodeTranslateError', 'UnicodeWarning', 'UserW
-   arning', 'ValueError', 'Warning', 'ZeroDivisionError', '__build_class__', '__deb
-   ug__', '__doc__', '__import__', '__name__', '__package__', 'abs', 'all', 'any',
-   'ascii', 'bin', 'bool', 'bytearray', 'bytes', 'chr', 'classmethod', 'compile', '
-   complex', 'copyright', 'credits', 'delattr', 'dict', 'dir', 'divmod', 'enumerate
-   ', 'eval', 'exec', 'exit', 'filter', 'float', 'format', 'frozenset', 'getattr',
-   'globals', 'hasattr', 'hash', 'help', 'hex', 'id', 'input', 'int', 'isinstance',
-    'issubclass', 'iter', 'len', 'license', 'list', 'locals', 'map', 'max', 'memory
-   view', 'min', 'next', 'object', 'oct', 'open', 'ord', 'pow', 'print', 'property'
-   , 'quit', 'range', 'repr', 'reversed', 'round', 'set', 'setattr', 'slice', 'sort
-   ed', 'staticmethod', 'str', 'sum', 'super', 'tuple', 'type', 'vars', 'zip']
+   >>> dir(builtins)  # doctest: +NORMALIZE_WHITESPACE
+   ['ArithmeticError', 'AssertionError', 'AttributeError', 'BaseException',
+    'BlockingIOError', 'BrokenPipeError', 'BufferError', 'BytesWarning',
+    'ChildProcessError', 'ConnectionAbortedError', 'ConnectionError',
+    'ConnectionRefusedError', 'ConnectionResetError', 'DeprecationWarning',
+    'EOFError', 'Ellipsis', 'EnvironmentError', 'Exception', 'False',
+    'FileExistsError', 'FileNotFoundError', 'FloatingPointError',
+    'FutureWarning', 'GeneratorExit', 'IOError', 'ImportError',
+    'ImportWarning', 'IndentationError', 'IndexError', 'InterruptedError',
+    'IsADirectoryError', 'KeyError', 'KeyboardInterrupt', 'LookupError',
+    'MemoryError', 'NameError', 'None', 'NotADirectoryError', 'NotImplemented',
+    'NotImplementedError', 'OSError', 'OverflowError',
+    'PendingDeprecationWarning', 'PermissionError', 'ProcessLookupError',
+    'ReferenceError', 'ResourceWarning', 'RuntimeError', 'RuntimeWarning',
+    'StopIteration', 'SyntaxError', 'SyntaxWarning', 'SystemError',
+    'SystemExit', 'TabError', 'TimeoutError', 'True', 'TypeError',
+    'UnboundLocalError', 'UnicodeDecodeError', 'UnicodeEncodeError',
+    'UnicodeError', 'UnicodeTranslateError', 'UnicodeWarning', 'UserWarning',
+    'ValueError', 'Warning', 'ZeroDivisionError', '_', '__build_class__',
+    '__debug__', '__doc__', '__import__', '__name__', '__package__', 'abs',
+    'all', 'any', 'ascii', 'bin', 'bool', 'bytearray', 'bytes', 'callable',
+    'chr', 'classmethod', 'compile', 'complex', 'copyright', 'credits',
+    'delattr', 'dict', 'dir', 'divmod', 'enumerate', 'eval', 'exec', 'exit',
+    'filter', 'float', 'format', 'frozenset', 'getattr', 'globals', 'hasattr',
+    'hash', 'help', 'hex', 'id', 'input', 'int', 'isinstance', 'issubclass',
+    'iter', 'len', 'license', 'list', 'locals', 'map', 'max', 'memoryview',
+    'min', 'next', 'object', 'oct', 'open', 'ord', 'pow', 'print', 'property',
+    'quit', 'range', 'repr', 'reversed', 'round', 'set', 'setattr', 'slice',
+    'sorted', 'staticmethod', 'str', 'sum', 'super', 'tuple', 'type', 'vars',
+    'zip']
 
 .. _tut-packages:
 
@@ -364,7 +367,9 @@ There are also many different operations you might want to perform on sound data
 (such as mixing, adding echo, applying an equalizer function, creating an
 artificial stereo effect), so in addition you will be writing a never-ending
 stream of modules to perform these operations.  Here's a possible structure for
-your package (expressed in terms of a hierarchical filesystem)::
+your package (expressed in terms of a hierarchical filesystem):
+
+.. code-block:: text
 
    sound/                          Top-level package
          __init__.py               Initialize the sound package
@@ -461,7 +466,7 @@ list of module names that should be imported when ``from package import *`` is
 encountered.  It is up to the package author to keep this list up-to-date when a
 new version of the package is released.  Package authors may also decide not to
 support it, if they don't see a use for importing \* from their package.  For
-example, the file :file:`sounds/effects/__init__.py` could contain the following
+example, the file :file:`sound/effects/__init__.py` could contain the following
 code::
 
    __all__ = ["echo", "surround", "reverse"]
@@ -536,6 +541,6 @@ modules found in a package.
 .. rubric:: Footnotes
 
 .. [#] In fact function definitions are also 'statements' that are 'executed'; the
-   execution of a module-level function enters the function name in the module's
-   global symbol table.
+   execution of a module-level function definition enters the function name in
+   the module's global symbol table.
 

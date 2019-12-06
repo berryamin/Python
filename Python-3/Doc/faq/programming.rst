@@ -4,7 +4,9 @@
 Programming FAQ
 ===============
 
-.. contents::
+.. only:: html
+
+   .. contents::
 
 General Questions
 =================
@@ -115,167 +117,6 @@ Yes.  The coding style required for standard library modules is documented as
 :pep:`8`.
 
 
-My program is too slow. How do I speed it up?
----------------------------------------------
-
-That's a tough one, in general.  There are many tricks to speed up Python code;
-consider rewriting parts in C as a last resort.
-
-In some cases it's possible to automatically translate Python to C or x86
-assembly language, meaning that you don't have to modify your code to gain
-increased speed.
-
-.. XXX seems to have overlap with other questions!
-
-`Cython <http://cython.org>`_ and `Pyrex <http://www.cosc.canterbury.ac.nz/~greg/python/Pyrex/>`_
-can compile a slightly modified version of Python code into a C extension, and
-can be used on many different platforms.
-
-`Psyco <http://psyco.sourceforge.net>`_ is a just-in-time compiler that
-translates Python code into x86 assembly language.  If you can use it, Psyco can
-provide dramatic speedups for critical functions.
-
-The rest of this answer will discuss various tricks for squeezing a bit more
-speed out of Python code.  *Never* apply any optimization tricks unless you know
-you need them, after profiling has indicated that a particular function is the
-heavily executed hot spot in the code.  Optimizations almost always make the
-code less clear, and you shouldn't pay the costs of reduced clarity (increased
-development time, greater likelihood of bugs) unless the resulting performance
-benefit is worth it.
-
-There is a page on the wiki devoted to `performance tips
-<http://wiki.python.org/moin/PythonSpeed/PerformanceTips>`_.
-
-Guido van Rossum has written up an anecdote related to optimization at
-http://www.python.org/doc/essays/list2str.html.
-
-One thing to notice is that function and (especially) method calls are rather
-expensive; if you have designed a purely OO interface with lots of tiny
-functions that don't do much more than get or set an instance variable or call
-another method, you might consider using a more direct way such as directly
-accessing instance variables.  Also see the standard module :mod:`profile` which
-makes it possible to find out where your program is spending most of its time
-(if you have some patience -- the profiling itself can slow your program down by
-an order of magnitude).
-
-Remember that many standard optimization heuristics you may know from other
-programming experience may well apply to Python.  For example it may be faster
-to send output to output devices using larger writes rather than smaller ones in
-order to reduce the overhead of kernel system calls.  Thus CGI scripts that
-write all output in "one shot" may be faster than those that write lots of small
-pieces of output.
-
-Also, be sure to use Python's core features where appropriate.  For example,
-slicing allows programs to chop up lists and other sequence objects in a single
-tick of the interpreter's mainloop using highly optimized C implementations.
-Thus to get the same effect as::
-
-   L2 = []
-   for i in range(3):
-       L2.append(L1[i])
-
-it is much shorter and far faster to use ::
-
-   L2 = list(L1[:3])  # "list" is redundant if L1 is a list.
-
-Note that the functionally-oriented built-in functions such as :func:`map`,
-:func:`zip`, and friends can be a convenient accelerator for loops that
-perform a single task.  For example to pair the elements of two lists
-together::
-
-   >>> list(zip([1, 2, 3], [4, 5, 6]))
-   [(1, 4), (2, 5), (3, 6)]
-
-or to compute a number of sines::
-
-   >>> list(map(math.sin, (1, 2, 3, 4)))
-   [0.841470984808, 0.909297426826, 0.14112000806, -0.756802495308]
-
-The operation completes very quickly in such cases.
-
-Other examples include the ``join()`` and ``split()`` :ref:`methods
-of string objects <string-methods>`.
-
-For example if s1..s7 are large (10K+) strings then
-``"".join([s1,s2,s3,s4,s5,s6,s7])`` may be far faster than the more obvious
-``s1+s2+s3+s4+s5+s6+s7``, since the "summation" will compute many
-subexpressions, whereas ``join()`` does all the copying in one pass.  For
-manipulating strings, use the ``replace()`` and the ``format()`` :ref:`methods
-on string objects <string-methods>`.  Use regular expressions only when you're
-not dealing with constant string patterns.
-
-Be sure to use the :meth:`list.sort` built-in method to do sorting, and see the
-`sorting mini-HOWTO <http://wiki.python.org/moin/HowTo/Sorting>`_ for examples
-of moderately advanced usage.  :meth:`list.sort` beats other techniques for
-sorting in all but the most extreme circumstances.
-
-Another common trick is to "push loops into functions or methods."  For example
-suppose you have a program that runs slowly and you use the profiler to
-determine that a Python function ``ff()`` is being called lots of times.  If you
-notice that ``ff()``::
-
-   def ff(x):
-       ... # do something with x computing result...
-       return result
-
-tends to be called in loops like::
-
-   list = map(ff, oldlist)
-
-or::
-
-   for x in sequence:
-       value = ff(x)
-       ... # do something with value...
-
-then you can often eliminate function call overhead by rewriting ``ff()`` to::
-
-   def ffseq(seq):
-       resultseq = []
-       for x in seq:
-           ... # do something with x computing result...
-           resultseq.append(result)
-       return resultseq
-
-and rewrite the two examples to ``list = ffseq(oldlist)`` and to::
-
-   for value in ffseq(sequence):
-       ... # do something with value...
-
-Single calls to ``ff(x)`` translate to ``ffseq([x])[0]`` with little penalty.
-Of course this technique is not always appropriate and there are other variants
-which you can figure out.
-
-You can gain some performance by explicitly storing the results of a function or
-method lookup into a local variable.  A loop like::
-
-   for key in token:
-       dict[key] = dict.get(key, 0) + 1
-
-resolves ``dict.get`` every iteration.  If the method isn't going to change, a
-slightly faster implementation is::
-
-   dict_get = dict.get  # look up the method once
-   for key in token:
-       dict[key] = dict_get(key, 0) + 1
-
-Default arguments can be used to determine values once, at compile time instead
-of at run time.  This can only be done for functions or objects which will not
-be changed during program execution, such as replacing ::
-
-   def degree_sin(deg):
-       return math.sin(deg * math.pi / 180.0)
-
-with ::
-
-   def degree_sin(deg, factor=math.pi/180.0, sin=math.sin):
-       return sin(deg * factor)
-
-Because this trick uses default arguments for terms which should not be changed,
-it should only be used when you are not concerned with presenting a possibly
-confusing API to your users.
-
-
 Core Language
 =============
 
@@ -365,6 +206,58 @@ for all global references, you'd be using ``global`` all the time.  You'd have
 to declare as global every reference to a built-in function or to a component of
 an imported module.  This clutter would defeat the usefulness of the ``global``
 declaration for identifying side-effects.
+
+
+Why do lambdas defined in a loop with different values all return the same result?
+----------------------------------------------------------------------------------
+
+Assume you use a for loop to define a few different lambdas (or even plain
+functions), e.g.::
+
+   >>> squares = []
+   >>> for x in range(5):
+   ...    squares.append(lambda: x**2)
+
+This gives you a list that contains 5 lambdas that calculate ``x**2``.  You
+might expect that, when called, they would return, respectively, ``0``, ``1``,
+``4``, ``9``, and ``16``.  However, when you actually try you will see that
+they all return ``16``::
+
+   >>> squares[2]()
+   16
+   >>> squares[4]()
+   16
+
+This happens because ``x`` is not local to the lambdas, but is defined in
+the outer scope, and it is accessed when the lambda is called --- not when it
+is defined.  At the end of the loop, the value of ``x`` is ``4``, so all the
+functions now return ``4**2``, i.e. ``16``.  You can also verify this by
+changing the value of ``x`` and see how the results of the lambdas change::
+
+   >>> x = 8
+   >>> squares[2]()
+   64
+
+In order to avoid this, you need to save the values in variables local to the
+lambdas, so that they don't rely on the value of the global ``x``::
+
+   >>> squares = []
+   >>> for x in range(5):
+   ...    squares.append(lambda n=x: n**2)
+
+Here, ``n=x`` creates a new variable ``n`` local to the lambda and computed
+when the lambda is defined so that it has the same value that ``x`` had at
+that point in the loop.  This means that the value of ``n`` will be ``0``
+in the first lambda, ``1`` in the second, ``2`` in the third, and so on.
+Therefore each lambda will now return the correct result::
+
+   >>> squares[2]()
+   4
+   >>> squares[4]()
+   16
+
+Note that this behaviour is not peculiar to lambdas, but applies to regular
+functions too.
 
 
 How do I share global variables across modules?
@@ -472,6 +365,31 @@ calling another function by using ``*`` and ``**``::
        kwargs['width'] = '14.3c'
        ...
        g(x, *args, **kwargs)
+
+
+.. index::
+   single: argument; difference from parameter
+   single: parameter; difference from argument
+
+.. _faq-argument-vs-parameter:
+
+What is the difference between arguments and parameters?
+--------------------------------------------------------
+
+:term:`Parameters <parameter>` are defined by the names that appear in a
+function definition, whereas :term:`arguments <argument>` are the values
+actually passed to a function when calling it.  Parameters define what types of
+arguments a function can accept.  For example, given the function definition::
+
+   def func(foo, bar=None, **kwargs):
+       pass
+
+*foo*, *bar* and *kwargs* are parameters of ``func``.  However, when calling
+``func``, for example::
+
+   func(42, bar=314, extra=somevar)
+
+the values ``42``, ``314``, and ``somevar`` are arguments.
 
 
 How do I write a function with output parameters (call by reference)?
@@ -674,11 +592,11 @@ Comma is not an operator in Python.  Consider this session::
 Since the comma is not an operator, but a separator between expressions the
 above is evaluated as if you had entered::
 
-    >>> ("a" in "b"), "a"
+    ("a" in "b"), "a"
 
 not::
 
-    >>> "a" in ("b", "a")
+    "a" in ("b", "a")
 
 The same is true of the various assignment operators (``=``, ``+=`` etc).  They
 are not truly operators but syntactic delimiters in assignment statements.
@@ -687,61 +605,21 @@ are not truly operators but syntactic delimiters in assignment statements.
 Is there an equivalent of C's "?:" ternary operator?
 ----------------------------------------------------
 
-Yes, this feature was added in Python 2.5. The syntax would be as follows::
+Yes, there is. The syntax is as follows::
 
    [on_true] if [expression] else [on_false]
 
    x, y = 50, 25
-
    small = x if x < y else y
 
-For versions previous to 2.5 the answer would be 'No'.
+Before this syntax was introduced in Python 2.5, a common idiom was to use
+logical operators::
 
-.. XXX remove rest?
+   [expression] and [on_true] or [on_false]
 
-In many cases you can mimic ``a ? b : c`` with ``a and b or c``, but there's a
-flaw: if *b* is zero (or empty, or ``None`` -- anything that tests false) then
-*c* will be selected instead.  In many cases you can prove by looking at the
-code that this can't happen (e.g. because *b* is a constant or has a type that
-can never be false), but in general this can be a problem.
-
-Tim Peters (who wishes it was Steve Majewski) suggested the following solution:
-``(a and [b] or [c])[0]``.  Because ``[b]`` is a singleton list it is never
-false, so the wrong path is never taken; then applying ``[0]`` to the whole
-thing gets the *b* or *c* that you really wanted.  Ugly, but it gets you there
-in the rare cases where it is really inconvenient to rewrite your code using
-'if'.
-
-The best course is usually to write a simple ``if...else`` statement.  Another
-solution is to implement the ``?:`` operator as a function::
-
-   def q(cond, on_true, on_false):
-       if cond:
-           if not isfunction(on_true):
-               return on_true
-           else:
-               return on_true()
-       else:
-           if not isfunction(on_false):
-               return on_false
-           else:
-               return on_false()
-
-In most cases you'll pass b and c directly: ``q(a, b, c)``.  To avoid evaluating
-b or c when they shouldn't be, encapsulate them within a lambda function, e.g.:
-``q(a, lambda: b, lambda: c)``.
-
-It has been asked *why* Python has no if-then-else expression.  There are
-several answers: many languages do just fine without one; it can easily lead to
-less readable code; no sufficiently "Pythonic" syntax has been discovered; a
-search of the standard library found remarkably few places where using an
-if-then-else expression would make the code more understandable.
-
-In 2002, :pep:`308` was written proposing several possible syntaxes and the
-community was asked to vote on the issue.  The vote was inconclusive.  Most
-people liked one of the syntaxes, but also hated other syntaxes; many votes
-implied that people preferred no ternary operator rather than having a syntax
-they hated.
+However, this idiom is unsafe, as it can give wrong results when *on_true*
+has a false boolean value.  Therefore, it is always better to use
+the ``... if ... else ...`` form.
 
 
 Is it possible to write obfuscated one-liners in Python?
@@ -860,15 +738,22 @@ the :ref:`string-formatting` section, e.g. ``"{:04d}".format(144)`` yields
 How do I modify a string in place?
 ----------------------------------
 
-You can't, because strings are immutable.  If you need an object with this
-ability, try converting the string to a list or use the array module::
+You can't, because strings are immutable.  In most situations, you should
+simply construct a new string from the various parts you want to assemble
+it from.  However, if you need an object with the ability to modify in-place
+unicode data, try using a :class:`io.StringIO` object or the :mod:`array`
+module::
 
+   >>> import io
    >>> s = "Hello, world"
-   >>> a = list(s)
-   >>> print(a)
-   ['H', 'e', 'l', 'l', 'o', ',', ' ', 'w', 'o', 'r', 'l', 'd']
-   >>> a[7:] = list("there!")
-   >>> ''.join(a)
+   >>> sio = io.StringIO(s)
+   >>> sio.getvalue()
+   'Hello, world'
+   >>> sio.seek(7)
+   7
+   >>> sio.write("there!")
+   6
+   >>> sio.getvalue()
    'Hello, there!'
 
    >>> import array
@@ -877,7 +762,7 @@ ability, try converting the string to a list or use the array module::
    array('u', 'Hello, world')
    >>> a[0] = 'y'
    >>> print(a)
-   array('u', 'yello world')
+   array('u', 'yello, world')
    >>> a.tounicode()
    'yello, world'
 
@@ -943,11 +828,11 @@ There are various techniques.
 Is there an equivalent to Perl's chomp() for removing trailing newlines from strings?
 -------------------------------------------------------------------------------------
 
-Starting with Python 2.2, you can use ``S.rstrip("\r\n")`` to remove all
-occurrences of any line terminator from the end of the string ``S`` without
-removing other trailing whitespace.  If the string ``S`` represents more than
-one line, with several empty lines at the end, the line terminators for all the
-blank lines will be removed::
+You can use ``S.rstrip("\r\n")`` to remove all occurrences of any line
+terminator from the end of the string ``S`` without removing other trailing
+whitespace.  If the string ``S`` represents more than one line, with several
+empty lines at the end, the line terminators for all the blank lines will
+be removed::
 
    >>> lines = ("line 1 \r\n"
    ...          "\r\n"
@@ -957,15 +842,6 @@ blank lines will be removed::
 
 Since this is typically only desired when reading text one line at a time, using
 ``S.rstrip()`` this way works well.
-
-For older versions of Python, there are two partial substitutes:
-
-- If you want to remove all trailing whitespace, use the ``rstrip()`` method of
-  string objects.  This removes all trailing whitespace, not just a single
-  newline.
-
-- Otherwise, if there is only one line in the string ``S``, use
-  ``S.splitlines()[0]``.
 
 
 Is there a scanf() or sscanf() equivalent?
@@ -987,6 +863,94 @@ What does 'UnicodeDecodeError' or 'UnicodeEncodeError' error  mean?
 -------------------------------------------------------------------
 
 See the :ref:`unicode-howto`.
+
+
+Performance
+===========
+
+My program is too slow. How do I speed it up?
+---------------------------------------------
+
+That's a tough one, in general.  First, here are a list of things to
+remember before diving further:
+
+* Performance characteristics vary across Python implementations.  This FAQ
+  focusses on :term:`CPython`.
+* Behaviour can vary across operating systems, especially when talking about
+  I/O or multi-threading.
+* You should always find the hot spots in your program *before* attempting to
+  optimize any code (see the :mod:`profile` module).
+* Writing benchmark scripts will allow you to iterate quickly when searching
+  for improvements (see the :mod:`timeit` module).
+* It is highly recommended to have good code coverage (through unit testing
+  or any other technique) before potentially introducing regressions hidden
+  in sophisticated optimizations.
+
+That being said, there are many tricks to speed up Python code.  Here are
+some general principles which go a long way towards reaching acceptable
+performance levels:
+
+* Making your algorithms faster (or changing to faster ones) can yield
+  much larger benefits than trying to sprinkle micro-optimization tricks
+  all over your code.
+
+* Use the right data structures.  Study documentation for the :ref:`bltin-types`
+  and the :mod:`collections` module.
+
+* When the standard library provides a primitive for doing something, it is
+  likely (although not guaranteed) to be faster than any alternative you
+  may come up with.  This is doubly true for primitives written in C, such
+  as builtins and some extension types.  For example, be sure to use
+  either the :meth:`list.sort` built-in method or the related :func:`sorted`
+  function to do sorting (and see the
+  `sorting mini-HOWTO <http://wiki.python.org/moin/HowTo/Sorting>`_ for examples
+  of moderately advanced usage).
+
+* Abstractions tend to create indirections and force the interpreter to work
+  more.  If the levels of indirection outweigh the amount of useful work
+  done, your program will be slower.  You should avoid excessive abstraction,
+  especially under the form of tiny functions or methods (which are also often
+  detrimental to readability).
+
+If you have reached the limit of what pure Python can allow, there are tools
+to take you further away.  For example, `Cython <http://cython.org>`_ can
+compile a slightly modified version of Python code into a C extension, and
+can be used on many different platforms.  Cython can take advantage of
+compilation (and optional type annotations) to make your code significantly
+faster than when interpreted.  If you are confident in your C programming
+skills, you can also :ref:`write a C extension module <extending-index>`
+yourself.
+
+.. seealso::
+   The wiki page devoted to `performance tips
+   <http://wiki.python.org/moin/PythonSpeed/PerformanceTips>`_.
+
+.. _efficient_string_concatenation:
+
+What is the most efficient way to concatenate many strings together?
+--------------------------------------------------------------------
+
+:class:`str` and :class:`bytes` objects are immutable, therefore concatenating
+many strings together is inefficient as each concatenation creates a new
+object.  In the general case, the total runtime cost is quadratic in the
+total string length.
+
+To accumulate many :class:`str` objects, the recommended idiom is to place
+them into a list and call :meth:`str.join` at the end::
+
+   chunks = []
+   for s in my_strings:
+       chunks.append(s)
+   result = ''.join(chunks)
+
+(another reasonably efficient idiom is to use :class:`io.StringIO`)
+
+To accumulate many :class:`bytes` objects, the recommended idiom is to extend
+a :class:`bytearray` object using in-place concatenation (the ``+=`` operator)::
+
+   result = bytearray()
+   for b in my_bytes_objects:
+       result += b
 
 
 Sequences (Tuples/Lists)
@@ -1058,15 +1022,8 @@ list, deleting duplicates as you go::
            else:
                last = mylist[i]
 
-If all elements of the list may be used as dictionary keys (i.e. they are all
-hashable) this is often faster ::
-
-   d = {}
-   for x in mylist:
-       d[x] = 1
-   mylist = list(d.keys())
-
-In Python 2.5 and later, the following is possible instead::
+If all elements of the list may be used as set keys (i.e. they are all
+:term:`hashable`) this is often faster ::
 
    mylist = list(set(mylist))
 
@@ -1104,7 +1061,7 @@ How do I create a multidimensional list?
 
 You probably tried to make a multidimensional array like this::
 
-   A = [[None] * 2] * 3
+   >>> A = [[None] * 2] * 3
 
 This looks correct if you print it::
 
@@ -1136,7 +1093,7 @@ use a list comprehension::
    A = [[None] * w for i in range(h)]
 
 Or, you can use an extension that provides a matrix datatype; `Numeric Python
-<http://numpy.scipy.org/>`_ is the best known.
+<http://www.numpy.org/>`_ is the best known.
 
 
 How do I apply a method to a sequence of objects?
@@ -1146,38 +1103,101 @@ Use a list comprehension::
 
    result = [obj.method() for obj in mylist]
 
+.. _faq-augmented-assignment-tuple-error:
+
+Why does a_tuple[i] += ['item'] raise an exception when the addition works?
+---------------------------------------------------------------------------
+
+This is because of a combination of the fact that augmented assignment
+operators are *assignment* operators, and the difference between mutable and
+immutable objects in Python.
+
+This discussion applies in general when augmented assignment operators are
+applied to elements of a tuple that point to mutable objects, but we'll use
+a ``list`` and ``+=`` as our exemplar.
+
+If you wrote::
+
+   >>> a_tuple = (1, 2)
+   >>> a_tuple[0] += 1
+   Traceback (most recent call last):
+      ...
+   TypeError: 'tuple' object does not support item assignment
+
+The reason for the exception should be immediately clear: ``1`` is added to the
+object ``a_tuple[0]`` points to (``1``), producing the result object, ``2``,
+but when we attempt to assign the result of the computation, ``2``, to element
+``0`` of the tuple, we get an error because we can't change what an element of
+a tuple points to.
+
+Under the covers, what this augmented assignment statement is doing is
+approximately this::
+
+   >>> result = a_tuple[0] + 1
+   >>> a_tuple[0] = result
+   Traceback (most recent call last):
+     ...
+   TypeError: 'tuple' object does not support item assignment
+
+It is the assignment part of the operation that produces the error, since a
+tuple is immutable.
+
+When you write something like::
+
+   >>> a_tuple = (['foo'], 'bar')
+   >>> a_tuple[0] += ['item']
+   Traceback (most recent call last):
+     ...
+   TypeError: 'tuple' object does not support item assignment
+
+The exception is a bit more surprising, and even more surprising is the fact
+that even though there was an error, the append worked::
+
+    >>> a_tuple[0]
+    ['foo', 'item']
+
+To see why this happens, you need to know that (a) if an object implements an
+``__iadd__`` magic method, it gets called when the ``+=`` augmented assignment
+is executed, and its return value is what gets used in the assignment statement;
+and (b) for lists, ``__iadd__`` is equivalent to calling ``extend`` on the list
+and returning the list.  That's why we say that for lists, ``+=`` is a
+"shorthand" for ``list.extend``::
+
+    >>> a_list = []
+    >>> a_list += [1]
+    >>> a_list
+    [1]
+
+This is equivalent to::
+
+    >>> result = a_list.__iadd__([1])
+    >>> a_list = result
+
+The object pointed to by a_list has been mutated, and the pointer to the
+mutated object is assigned back to ``a_list``.  The end result of the
+assignment is a no-op, since it is a pointer to the same object that ``a_list``
+was previously pointing to, but the assignment still happens.
+
+Thus, in our tuple example what is happening is equivalent to::
+
+   >>> result = a_tuple[0].__iadd__(['item'])
+   >>> a_tuple[0] = result
+   Traceback (most recent call last):
+     ...
+   TypeError: 'tuple' object does not support item assignment
+
+The ``__iadd__`` succeeds, and thus the list is extended, but even though
+``result`` points to the same object that ``a_tuple[0]`` already points to,
+that final assignment still results in an error, because tuples are immutable.
+
 
 Dictionaries
 ============
 
-How can I get a dictionary to display its keys in a consistent order?
----------------------------------------------------------------------
+How can I get a dictionary to store and display its keys in a consistent order?
+-------------------------------------------------------------------------------
 
-You can't.  Dictionaries store their keys in an unpredictable order, so the
-display order of a dictionary's elements will be similarly unpredictable.
-
-This can be frustrating if you want to save a printable version to a file, make
-some changes and then compare it with some other printed dictionary.  In this
-case, use the ``pprint`` module to pretty-print the dictionary; the items will
-be presented in order sorted by the key.
-
-A more complicated solution is to subclass ``dict`` to create a
-``SortedDict`` class that prints itself in a predictable order.  Here's one
-simpleminded implementation of such a class::
-
-   class SortedDict(dict):
-       def __repr__(self):
-           keys = sorted(self.keys())
-           result = ("{!r}: {!r}".format(k, self[k]) for k in keys)
-           return "{{{}}}".format(", ".join(result))
-
-       __str__ = __repr__
-
-This will work for many common situations you might encounter, though it's far
-from a perfect solution. The largest flaw is that if some values in the
-dictionary are also dictionaries, their values won't be presented in any
-particular order.
-
+Use :class:`collections.OrderedDict`.
 
 I want to do a complicated sort: can you do a Schwartzian Transform in Python?
 ------------------------------------------------------------------------------
@@ -1436,15 +1456,7 @@ not::
 
    C.count = 314
 
-Static methods are possible since Python 2.2::
-
-   class C:
-       def static(arg1, arg2, arg3):
-           # No 'self' parameter!
-           ...
-       static = staticmethod(static)
-
-With Python 2.4's decorators, this can also be written as ::
+Static methods are possible::
 
    class C:
        @staticmethod
@@ -1564,41 +1576,76 @@ You can program the class's constructor to keep track of all instances by
 keeping a list of weak references to each instance.
 
 
+Why does the result of ``id()`` appear to be not unique?
+--------------------------------------------------------
+
+The :func:`id` builtin returns an integer that is guaranteed to be unique during
+the lifetime of the object.  Since in CPython, this is the object's memory
+address, it happens frequently that after an object is deleted from memory, the
+next freshly created object is allocated at the same position in memory.  This
+is illustrated by this example:
+
+>>> id(1000)
+13901272
+>>> id(2000)
+13901272
+
+The two ids belong to different integer objects that are created before, and
+deleted immediately after execution of the ``id()`` call.  To be sure that
+objects whose id you want to examine are still alive, create another reference
+to the object:
+
+>>> a = 1000; b = 2000
+>>> id(a)
+13901272
+>>> id(b)
+13891296
+
+
 Modules
 =======
 
 How do I create a .pyc file?
 ----------------------------
 
-When a module is imported for the first time (or when the source is more recent
-than the current compiled file) a ``.pyc`` file containing the compiled code
-should be created in the same directory as the ``.py`` file.
+When a module is imported for the first time (or when the source file has
+changed since the current compiled file was created) a ``.pyc`` file containing
+the compiled code should be created in a ``__pycache__`` subdirectory of the
+directory containing the ``.py`` file.  The ``.pyc`` file will have a
+filename that starts with the same name as the ``.py`` file, and ends with
+``.pyc``, with a middle component that depends on the particular ``python``
+binary that created it.  (See :pep:`3147` for details.)
 
-One reason that a ``.pyc`` file may not be created is permissions problems with
-the directory. This can happen, for example, if you develop as one user but run
-as another, such as if you are testing with a web server.  Creation of a .pyc
-file is automatic if you're importing a module and Python has the ability
-(permissions, free space, etc...) to write the compiled module back to the
-directory.
+One reason that a ``.pyc`` file may not be created is a permissions problem
+with the directory containing the source file, meaning that the ``__pycache__``
+subdirectory cannot be created. This can happen, for example, if you develop as
+one user but run as another, such as if you are testing with a web server.
 
-Running Python on a top level script is not considered an import and no ``.pyc``
-will be created.  For example, if you have a top-level module ``abc.py`` that
-imports another module ``xyz.py``, when you run abc, ``xyz.pyc`` will be created
-since xyz is imported, but no ``abc.pyc`` file will be created since ``abc.py``
-isn't being imported.
+Unless the :envvar:`PYTHONDONTWRITEBYTECODE` environment variable is set,
+creation of a .pyc file is automatic if you're importing a module and Python
+has the ability (permissions, free space, etc...) to create a ``__pycache__``
+subdirectory and write the compiled module to that subdirectory.
 
-If you need to create abc.pyc -- that is, to create a .pyc file for a module
-that is not imported -- you can, using the :mod:`py_compile` and
-:mod:`compileall` modules.
+Running Python on a top level script is not considered an import and no
+``.pyc`` will be created.  For example, if you have a top-level module
+``foo.py`` that imports another module ``xyz.py``, when you run ``foo`` (by
+typing ``python foo.py`` as a shell command), a ``.pyc`` will be created for
+``xyz`` because ``xyz`` is imported, but no ``.pyc`` file will be created for
+``foo`` since ``foo.py`` isn't being imported.
+
+If you need to create a ``.pyc`` file for ``foo`` -- that is, to create a
+``.pyc`` file for a module that is not imported -- you can, using the
+:mod:`py_compile` and :mod:`compileall` modules.
 
 The :mod:`py_compile` module can manually compile any module.  One way is to use
 the ``compile()`` function in that module interactively::
 
    >>> import py_compile
-   >>> py_compile.compile('abc.py')
+   >>> py_compile.compile('foo.py')                 # doctest: +SKIP
 
-This will write the ``.pyc`` to the same location as ``abc.py`` (or you can
-override that with the optional parameter ``cfile``).
+This will write the ``.pyc`` to a ``__pycache__`` subdirectory in the same
+location as ``foo.py`` (or you can override that with the optional parameter
+``cfile``).
 
 You can also automatically compile all files in a directory or directories using
 the :mod:`compileall` module.  You can do it from the shell prompt by running

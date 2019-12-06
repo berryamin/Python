@@ -13,7 +13,6 @@ Currently, the HOWTOs are:
 .. toctree::
    :maxdepth: 1
 
-   advocacy.rst
    pyporting.rst
    cporting.rst
    curses.rst
@@ -27,4 +26,6 @@ Currently, the HOWTOs are:
    unicode.rst
    urllib2.rst
    webservers.rst
+   argparse.rst
+   ipaddress.rst
 

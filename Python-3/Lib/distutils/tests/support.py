@@ -32,14 +32,15 @@ class LoggingSilencer(object):
     def _log(self, level, msg, args):
         if level not in (DEBUG, INFO, WARN, ERROR, FATAL):
             raise ValueError('%s wrong log level' % str(level))
+        if not isinstance(msg, str):
+            raise TypeError("msg should be str, not '%.200s'"
+                            % (type(msg).__name__))
         self.logs.append((level, msg, args))
 
     def get_logs(self, *levels):
         def _format(msg, args):
-            if len(args) == 0:
-                return msg
             return msg % args
-        return [_format(msg, args) for level, msg, args
+        return [msg % args for level, msg, args
                 in self.logs if level in levels]
 
     def clear_logs(self):
@@ -141,9 +142,9 @@ def copy_xxmodule_c(directory):
 
     Example use:
 
-            def test_compile(self):
-                copy_xxmodule_c(self.tmpdir)
-                self.assertIn('xxmodule.c', os.listdir(self.tmpdir)
+        def test_compile(self):
+            copy_xxmodule_c(self.tmpdir)
+            self.assertIn('xxmodule.c', os.listdir(self.tmpdir))
 
     If the source file can be found, it will be copied to *directory*.  If not,
     the test will be skipped.  Errors during copy are not caught.
@@ -175,10 +176,9 @@ def _get_xxmodule_path():
 def fixup_build_ext(cmd):
     """Function needed to make build_ext tests pass.
 
-    When Python was build with --enable-shared on Unix, -L. is not good
-    enough to find the libpython<blah>.so.  This is because regrtest runs
-    it under a tempdir, not in the top level where the .so lives.  By the
-    time we've gotten here, Python's already been chdir'd to the tempdir.
+    When Python was built with --enable-shared on Unix, -L. is not enough to
+    find libpython<blah>.so, because regrtest runs in a tempdir, not in the
+    source directory where the .so lives.
 
     When Python was built with in debug mode on Windows, build_ext commands
     need their debug attribute set, and it is not done automatically for
@@ -189,6 +189,9 @@ def fixup_build_ext(cmd):
         cmd = build_ext(dist)
         support.fixup_build_ext(cmd)
         cmd.ensure_finalized()
+
+    Unlike most other Unix platforms, Mac OS X embeds absolute paths
+    to shared libraries into executables, so the fixup is not needed there.
     """
     if os.name == 'nt':
         cmd.debug = sys.executable.endswith('_d.exe')
@@ -200,5 +203,8 @@ def fixup_build_ext(cmd):
         if runshared is None:
             cmd.library_dirs = ['.']
         else:
-            name, equals, value = runshared.partition('=')
-            cmd.library_dirs = value.split(os.pathsep)
+            if sys.platform == 'darwin':
+                cmd.library_dirs = []
+            else:
+                name, equals, value = runshared.partition('=')
+                cmd.library_dirs = [d for d in value.split(os.pathsep) if d]

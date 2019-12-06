@@ -56,7 +56,6 @@ another rational number, or from a string.
       Fraction(0, 1)
       >>> Fraction('3/7')
       Fraction(3, 7)
-      [40794 refs]
       >>> Fraction(' -3/7 ')
       Fraction(-3, 7)
       >>> Fraction('1.414213 \t\n')
@@ -78,11 +77,20 @@ another rational number, or from a string.
    :class:`numbers.Rational`, and implements all of the methods and
    operations from that class.  :class:`Fraction` instances are hashable,
    and should be treated as immutable.  In addition,
-   :class:`Fraction` has the following methods:
+   :class:`Fraction` has the following properties and methods:
 
    .. versionchanged:: 3.2
       The :class:`Fraction` constructor now accepts :class:`float` and
       :class:`decimal.Decimal` instances.
+
+
+   .. attribute:: numerator
+
+      Numerator of the Fraction in lowest term.
+
+   .. attribute:: denominator
+
+      Denominator of the Fraction in lowest term.
 
 
    .. method:: from_float(flt)
@@ -91,7 +99,9 @@ another rational number, or from a string.
       value of *flt*, which must be a :class:`float`. Beware that
       ``Fraction.from_float(0.3)`` is not the same value as ``Fraction(3, 10)``
 
-      .. note:: From Python 3.2 onwards, you can also construct a
+      .. note::
+
+         From Python 3.2 onwards, you can also construct a
          :class:`Fraction` instance directly from a :class:`float`.
 
 
@@ -100,7 +110,9 @@ another rational number, or from a string.
       This class method constructs a :class:`Fraction` representing the exact
       value of *dec*, which must be a :class:`decimal.Decimal` instance.
 
-      .. note:: From Python 3.2 onwards, you can also construct a
+      .. note::
+
+         From Python 3.2 onwards, you can also construct a
          :class:`Fraction` instance directly from a :class:`decimal.Decimal`
          instance.
 

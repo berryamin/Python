@@ -35,12 +35,19 @@ represented by objects.)
 Every object has an identity, a type and a value.  An object's *identity* never
 changes once it has been created; you may think of it as the object's address in
 memory.  The ':keyword:`is`' operator compares the identity of two objects; the
-:func:`id` function returns an integer representing its identity (currently
-implemented as its address). An object's :dfn:`type` is also unchangeable. [#]_
+:func:`id` function returns an integer representing its identity.
+
+.. impl-detail::
+
+   For CPython, ``id(x)`` is the memory address where ``x`` is stored.
+
 An object's type determines the operations that the object supports (e.g., "does
 it have a length?") and also defines the possible values for objects of that
 type.  The :func:`type` function returns an object's type (which is an object
-itself).  The *value* of some objects can change.  Objects whose value can
+itself).  Like its identity, an object's :dfn:`type` is also unchangeable.
+[#]_
+
+The *value* of some objects can change.  Objects whose value can
 change are said to be *mutable*; objects whose value is unchangeable once they
 are created are called *immutable*. (The value of an immutable container object
 that contains a reference to a mutable object can change when the latter's value
@@ -194,7 +201,7 @@ Ellipsis
             single: True
 
          These represent the truth values False and True.  The two objects representing
-         the values False and True are the only Boolean objects. The Boolean type is a
+         the values ``False`` and ``True`` are the only Boolean objects. The Boolean type is a
          subtype of the integer type, and Boolean values behave like the values 0 and 1,
          respectively, in almost all contexts, the exception being that when converted to
          a string, the strings ``"False"`` or ``"True"`` are returned, respectively.
@@ -267,25 +274,27 @@ Sequences
 
       The following types are immutable sequences:
 
+      .. index::
+         single: string; immutable sequences
+
       Strings
          .. index::
             builtin: chr
             builtin: ord
-            builtin: str
             single: character
             single: integer
             single: Unicode
 
-         The items of a string object are Unicode code units.  A Unicode code
-         unit is represented by a string object of one item and can hold either
-         a 16-bit or 32-bit value representing a Unicode ordinal (the maximum
-         value for the ordinal is given in ``sys.maxunicode``, and depends on
-         how Python is configured at compile time).  Surrogate pairs may be
-         present in the Unicode object, and will be reported as two separate
-         items.  The built-in functions :func:`chr` and :func:`ord` convert
-         between code units and nonnegative integers representing the Unicode
-         ordinals as defined in the Unicode Standard 3.0. Conversion from and to
-         other encodings are possible through the string method :meth:`encode`.
+         A string is a sequence of values that represent Unicode codepoints.
+         All the codepoints in range ``U+0000 - U+10FFFF`` can be represented
+         in a string.  Python doesn't have a :c:type:`chr` type, and
+         every character in the string is represented as a string object
+         with length ``1``.  The built-in function :func:`ord` converts a
+         character to its codepoint (as an integer); :func:`chr` converts
+         an integer in range ``0 - 10FFFF`` to the corresponding character.
+         :meth:`str.encode` can be used to convert a :class:`str` to
+         :class:`bytes` using the given encoding, and :meth:`bytes.decode` can
+         be used to achieve the opposite.
 
       Tuples
          .. index::
@@ -305,9 +314,9 @@ Sequences
 
          A bytes object is an immutable array.  The items are 8-bit bytes,
          represented by integers in the range 0 <= x < 256.  Bytes literals
-         (like ``b'abc'`` and the built-in function :func:`bytes` can be used to
+         (like ``b'abc'``) and the built-in function :func:`bytes` can be used to
          construct bytes objects.  Also, bytes objects can be decoded to strings
-         via the :meth:`decode` method.
+         via the :meth:`~bytes.decode` method.
 
    Mutable sequences
       .. index::
@@ -369,7 +378,7 @@ Set types
 
       These represent a mutable set. They are created by the built-in :func:`set`
       constructor and can be modified afterwards by several methods, such as
-      :meth:`add`.
+      :meth:`~set.add`.
 
    Frozen sets
       .. index:: object: frozenset
@@ -439,6 +448,8 @@ Callable types
 
       Special attributes:
 
+      .. tabularcolumns:: |l|L|l|
+
       +-------------------------+-------------------------------+-----------+
       | Attribute               | Meaning                       |           |
       +=========================+===============================+===========+
@@ -447,6 +458,11 @@ Callable types
       |                         | unavailable                   |           |
       +-------------------------+-------------------------------+-----------+
       | :attr:`__name__`        | The function's name           | Writable  |
+      +-------------------------+-------------------------------+-----------+
+      | :attr:`__qualname__`    | The function's                | Writable  |
+      |                         | :term:`qualified name`        |           |
+      |                         |                               |           |
+      |                         | .. versionadded:: 3.3         |           |
       +-------------------------+-------------------------------+-----------+
       | :attr:`__module__`      | The name of the module the    | Writable  |
       |                         | function was defined in, or   |           |
@@ -479,7 +495,7 @@ Callable types
       | :attr:`__annotations__` | A dict containing annotations | Writable  |
       |                         | of parameters.  The keys of   |           |
       |                         | the dict are the parameter    |           |
-      |                         | names, or ``'return'`` for    |           |
+      |                         | names, and ``'return'`` for   |           |
       |                         | the return annotation, if     |           |
       |                         | provided.                     |           |
       +-------------------------+-------------------------------+-----------+
@@ -588,9 +604,9 @@ Callable types
       A function or method which uses the :keyword:`yield` statement (see section
       :ref:`yield`) is called a :dfn:`generator function`.  Such a function, when
       called, always returns an iterator object which can be used to execute the
-      body of the function:  calling the iterator's :meth:`__next__` method will
-      cause the function to execute until it provides a value using the
-      :keyword:`yield` statement.  When the function executes a
+      body of the function:  calling the iterator's :meth:`iterator.__next__`
+      method will cause the function to execute until it provides a value
+      using the :keyword:`yield` statement.  When the function executes a
       :keyword:`return` statement or falls off the end, a :exc:`StopIteration`
       exception is raised and the iterator will have reached the end of the set of
       values to be returned.
@@ -639,17 +655,20 @@ Modules
       statement: import
       object: module
 
-   Modules are imported by the :keyword:`import` statement (see section
-   :ref:`import`). A module object has a
-   namespace implemented by a dictionary object (this is the dictionary referenced
-   by the __globals__ attribute of functions defined in the module).  Attribute
-   references are translated to lookups in this dictionary, e.g., ``m.x`` is
-   equivalent to ``m.__dict__["x"]``. A module object does not contain the code
-   object used to initialize the module (since it isn't needed once the
-   initialization is done).
+   Modules are a basic organizational unit of Python code, and are created by
+   the :ref:`import system <importsystem>` as invoked either by the
+   :keyword:`import` statement (see :keyword:`import`), or by calling
+   functions such as :func:`importlib.import_module` and built-in
+   :func:`__import__`.  A module object has a namespace implemented by a
+   dictionary object (this is the dictionary referenced by the ``__globals__``
+   attribute of functions defined in the module).  Attribute references are
+   translated to lookups in this dictionary, e.g., ``m.x`` is equivalent to
+   ``m.__dict__["x"]``. A module object does not contain the code object used
+   to initialize the module (since it isn't needed once the initialization is
+   done).
 
-   Attribute assignment updates the module's namespace dictionary, e.g., ``m.x =
-   1`` is equivalent to ``m.__dict__["x"] = 1``.
+   Attribute assignment updates the module's namespace dictionary, e.g.,
+   ``m.x = 1`` is equivalent to ``m.__dict__["x"] = 1``.
 
    .. index:: single: __dict__ (module attribute)
 
@@ -671,11 +690,12 @@ Modules
 
    Predefined (writable) attributes: :attr:`__name__` is the module's name;
    :attr:`__doc__` is the module's documentation string, or ``None`` if
-   unavailable; :attr:`__file__` is the pathname of the file from which the module
-   was loaded, if it was loaded from a file. The :attr:`__file__` attribute is not
-   present for C modules that are statically linked into the interpreter; for
-   extension modules loaded dynamically from a shared library, it is the pathname
-   of the shared library file.
+   unavailable; :attr:`__file__` is the pathname of the file from which the
+   module was loaded, if it was loaded from a file. The :attr:`__file__`
+   attribute may be missing for certain types of modules, such as C modules
+   that are statically linked into the interpreter; for extension modules
+   loaded dynamically from a shared library, it is the pathname of the shared
+   library file.
 
 Custom classes
    Custom class types are typically created by class definitions (see section
@@ -728,10 +748,10 @@ Custom classes
 
    Special attributes: :attr:`__name__` is the class name; :attr:`__module__` is
    the module name in which the class was defined; :attr:`__dict__` is the
-   dictionary containing the class's namespace; :attr:`__bases__` is a tuple
-   (possibly empty or a singleton) containing the base classes, in the order of
-   their occurrence in the base class list; :attr:`__doc__` is the class's
-   documentation string, or None if undefined.
+   dictionary containing the class's namespace; :attr:`~class.__bases__` is a
+   tuple (possibly empty or a singleton) containing the base classes, in the
+   order of their occurrence in the base class list; :attr:`__doc__` is the
+   class's documentation string, or None if undefined.
 
 Class instances
    .. index::
@@ -773,8 +793,8 @@ Class instances
       single: __dict__ (instance attribute)
       single: __class__ (instance attribute)
 
-   Special attributes: :attr:`__dict__` is the attribute dictionary;
-   :attr:`__class__` is the instance's class.
+   Special attributes: :attr:`~object.__dict__` is the attribute dictionary;
+   :attr:`~instance.__class__` is the instance's class.
 
 I/O objects (also known as file objects)
    .. index::
@@ -792,9 +812,9 @@ I/O objects (also known as file objects)
 
    A :term:`file object` represents an open file.  Various shortcuts are
    available to create file objects: the :func:`open` built-in function, and
-   also :func:`os.popen`, :func:`os.fdopen`, and the :meth:`makefile` method
-   of socket objects (and perhaps by other functions or methods provided
-   by extension modules).
+   also :func:`os.popen`, :func:`os.fdopen`, and the
+   :meth:`~socket.socket.makefile` method of socket objects (and perhaps by
+   other functions or methods provided by extension modules).
 
    The objects ``sys.stdin``, ``sys.stdout`` and ``sys.stderr`` are
    initialized to file objects corresponding to the interpreter's standard
@@ -963,9 +983,9 @@ Internal types
          single: stop (slice object attribute)
          single: step (slice object attribute)
 
-      Special read-only attributes: :attr:`start` is the lower bound; :attr:`stop` is
-      the upper bound; :attr:`step` is the step value; each is ``None`` if omitted.
-      These attributes can have any type.
+      Special read-only attributes: :attr:`~slice.start` is the lower bound;
+      :attr:`~slice.stop` is the upper bound; :attr:`~slice.step` is the step
+      value; each is ``None`` if omitted.  These attributes can have any type.
 
       Slice objects support one method:
 
@@ -1019,7 +1039,8 @@ When implementing a class that emulates any built-in type, it is important that
 the emulation only be implemented to the degree that it makes sense for the
 object being modelled.  For example, some sequences may work well with retrieval
 of individual elements, but extracting a slice may not make sense.  (One example
-of this is the :class:`NodeList` interface in the W3C's Document Object Model.)
+of this is the :class:`~xml.dom.NodeList` interface in the W3C's Document
+Object Model.)
 
 
 .. _customization:
@@ -1060,13 +1081,17 @@ Basic customization
 
    .. index:: pair: class; constructor
 
-   Called when the instance is created.  The arguments are those passed to the
-   class constructor expression.  If a base class has an :meth:`__init__` method,
-   the derived class's :meth:`__init__` method, if any, must explicitly call it to
-   ensure proper initialization of the base class part of the instance; for
-   example: ``BaseClass.__init__(self, [args...])``.  As a special constraint on
-   constructors, no value may be returned; doing so will cause a :exc:`TypeError`
-   to be raised at runtime.
+   Called after the instance has been created (by :meth:`__new__`), but before
+   it is returned to the caller.  The arguments are those passed to the
+   class constructor expression.  If a base class has an :meth:`__init__`
+   method, the derived class's :meth:`__init__` method, if any, must explicitly
+   call it to ensure proper initialization of the base class part of the
+   instance; for example: ``BaseClass.__init__(self, [args...])``.
+
+   Because :meth:`__new__` and :meth:`__init__` work together in constructing
+   objects (:meth:`__new__` to create it, and :meth:`__init__` to customise it),
+   no non-``None`` value may be returned by :meth:`__init__`; doing so will
+   cause a :exc:`TypeError` to be raised at runtime.
 
 
 .. method:: object.__del__(self)
@@ -1124,10 +1149,11 @@ Basic customization
       modules are still available at the time when the :meth:`__del__` method is
       called.
 
+      .. index::
+         single: repr() (built-in function); __repr__() (object method)
+
 
 .. method:: object.__repr__(self)
-
-   .. index:: builtin: repr
 
    Called by the :func:`repr` built-in function to compute the "official" string
    representation of an object.  If at all possible, this should look like a
@@ -1141,31 +1167,46 @@ Basic customization
    This is typically used for debugging, so it is important that the representation
    is information-rich and unambiguous.
 
+   .. index::
+      single: string; __str__() (object method)
+      single: format() (built-in function); __str__() (object method)
+      single: print() (built-in function); __str__() (object method)
+
 
 .. method:: object.__str__(self)
 
-   .. index::
-      builtin: str
-      builtin: print
+   Called by :func:`str(object) <str>` and the built-in functions
+   :func:`format` and :func:`print` to compute the "informal" or nicely
+   printable string representation of an object.  The return value must be a
+   :ref:`string <textseq>` object.
 
-   Called by the :func:`str` built-in function and by the :func:`print` function
-   to compute the "informal" string representation of an object.  This differs
-   from :meth:`__repr__` in that it does not have to be a valid Python
-   expression: a more convenient or concise representation may be used instead.
-   The return value must be a string object.
+   This method differs from :meth:`object.__repr__` in that there is no
+   expectation that :meth:`__str__` return a valid Python expression: a more
+   convenient or concise representation can be used.
+
+   The default implementation defined by the built-in type :class:`object`
+   calls :meth:`object.__repr__`.
 
    .. XXX what about subclasses of string?
 
 
-.. method:: object.__format__(self, format_spec)
+.. method:: object.__bytes__(self)
+
+   .. index:: builtin: bytes
+
+   Called by :func:`bytes` to compute a byte-string representation of an
+   object. This should return a ``bytes`` object.
 
    .. index::
+      single: string; __format__() (object method)
       pair: string; conversion
-      builtin: str
       builtin: print
 
+
+.. method:: object.__format__(self, format_spec)
+
    Called by the :func:`format` built-in function (and by extension, the
-   :meth:`format` method of class :class:`str`) to produce a "formatted"
+   :meth:`str.format` method of class :class:`str`) to produce a "formatted"
    string representation of an object. The ``format_spec`` argument is
    a string that contains a description of the formatting options desired.
    The interpretation of the ``format_spec`` argument is up to the type
@@ -1228,10 +1269,21 @@ Basic customization
 
    Called by built-in function :func:`hash` and for operations on members of
    hashed collections including :class:`set`, :class:`frozenset`, and
-   :class:`dict`.  :meth:`__hash__` should return an integer.  The only required
-   property is that objects which compare equal have the same hash value; it is
-   advised to somehow mix together (e.g. using exclusive or) the hash values for
-   the components of the object that also play a part in comparison of objects.
+   :class:`dict`.  :meth:`__hash__` should return an integer.  The only
+   required property is that objects which compare equal have the same hash
+   value; it is advised to somehow mix together (e.g. using exclusive or) the
+   hash values for the components of the object that also play a part in
+   comparison of objects.
+
+   .. note::
+
+     :func:`hash` truncates the value returned from an object's custom
+     :meth:`__hash__` method to the size of a :c:type:`Py_ssize_t`.  This is
+     typically 8 bytes on 64-bit builds and 4 bytes on 32-bit builds.  If an
+     object's   :meth:`__hash__` must interoperate on builds of different bit
+     sizes, be sure to check the width on all supported builds.  An easy way
+     to do this is with
+     ``python -c "import sys; print(sys.hash_info.width)"``
 
    If a class does not define an :meth:`__eq__` method it should not define a
    :meth:`__hash__` operation either; if it defines :meth:`__eq__` but not
@@ -1242,27 +1294,49 @@ Basic customization
    immutable (if the object's hash value changes, it will be in the wrong hash
    bucket).
 
-
    User-defined classes have :meth:`__eq__` and :meth:`__hash__` methods
    by default; with them, all objects compare unequal (except with themselves)
-   and ``x.__hash__()`` returns ``id(x)``.
+   and ``x.__hash__()`` returns an appropriate value such that ``x == y``
+   implies both that ``x is y`` and ``hash(x) == hash(y)``.
 
-   Classes which inherit a :meth:`__hash__` method from a parent class but
-   change the meaning of :meth:`__eq__` such that the hash value returned is no
-   longer appropriate (e.g. by switching to a value-based concept of equality
-   instead of the default identity based equality) can explicitly flag
-   themselves as being unhashable by setting ``__hash__ = None`` in the class
-   definition. Doing so means that not only will instances of the class raise an
-   appropriate :exc:`TypeError` when a program attempts to retrieve their hash
-   value, but they will also be correctly identified as unhashable when checking
-   ``isinstance(obj, collections.Hashable)`` (unlike classes which define their
-   own :meth:`__hash__` to explicitly raise :exc:`TypeError`).
+   A class that overrides :meth:`__eq__` and does not define :meth:`__hash__`
+   will have its :meth:`__hash__` implicitly set to ``None``.  When the
+   :meth:`__hash__` method of a class is ``None``, instances of the class will
+   raise an appropriate :exc:`TypeError` when a program attempts to retrieve
+   their hash value, and will also be correctly identified as unhashable when
+   checking ``isinstance(obj, collections.Hashable``).
 
    If a class that overrides :meth:`__eq__` needs to retain the implementation
    of :meth:`__hash__` from a parent class, the interpreter must be told this
-   explicitly by setting ``__hash__ = <ParentClass>.__hash__``. Otherwise the
-   inheritance of :meth:`__hash__` will be blocked, just as if :attr:`__hash__`
-   had been explicitly set to :const:`None`.
+   explicitly by setting ``__hash__ = <ParentClass>.__hash__``.
+
+   If a class that does not override :meth:`__eq__` wishes to suppress hash
+   support, it should include ``__hash__ = None`` in the class definition.
+   A class which defines its own :meth:`__hash__` that explicitly raises
+   a :exc:`TypeError` would be incorrectly identified as hashable by
+   an ``isinstance(obj, collections.Hashable)`` call.
+
+
+   .. note::
+
+      By default, the :meth:`__hash__` values of str, bytes and datetime
+      objects are "salted" with an unpredictable random value.  Although they
+      remain constant within an individual Python process, they are not
+      predictable between repeated invocations of Python.
+
+      This is intended to provide protection against a denial-of-service caused
+      by carefully-chosen inputs that exploit the worst case performance of a
+      dict insertion, O(n^2) complexity.  See
+      http://www.ocert.org/advisories/ocert-2011-003.html for details.
+
+      Changing hash values affects the iteration order of dicts, sets and
+      other mappings.  Python has never made guarantees about this ordering
+      (and it typically varies between 32-bit and 64-bit builds).
+
+      See also :envvar:`PYTHONHASHSEED`.
+
+   .. versionchanged:: 3.3
+      Hash randomization is enabled by default.
 
 
 .. method:: object.__bool__(self)
@@ -1343,7 +1417,8 @@ access (use of, assignment to, or deletion of ``x.name``) for class instances.
 
 .. method:: object.__dir__(self)
 
-   Called when :func:`dir` is called on the object.  A list must be returned.
+   Called when :func:`dir` is called on the object. A sequence must be
+   returned. :func:`dir` converts the returned sequence to a list and sorts it.
 
 
 .. _descriptors:
@@ -1500,7 +1575,7 @@ Notes on using *__slots__*
   program undefined.  In the future, a check may be added to prevent this.
 
 * Nonempty *__slots__* does not work for classes derived from "variable-length"
-  built-in types such as :class:`int`, :class:`str` and :class:`tuple`.
+  built-in types such as :class:`int`, :class:`bytes` and :class:`tuple`.
 
 * Any non-string iterable may be assigned to *__slots__*. Mappings may also be
   used; however, in the future, special meaning may be assigned to the values
@@ -1514,53 +1589,115 @@ Notes on using *__slots__*
 Customizing class creation
 --------------------------
 
-By default, classes are constructed using :func:`type`. A class definition is
-read into a separate namespace and the value of class name is bound to the
-result of ``type(name, bases, dict)``.
+By default, classes are constructed using :func:`type`. The class body is
+executed in a new namespace and the class name is bound locally to the
+result of ``type(name, bases, namespace)``.
 
-When the class definition is read, if a callable ``metaclass`` keyword argument
-is passed after the bases in the class definition, the callable given will be
-called instead of :func:`type`.  If other keyword arguments are passed, they
-will also be passed to the metaclass.  This allows classes or functions to be
-written which monitor or alter the class creation process:
+The class creation process can be customised by passing the ``metaclass``
+keyword argument in the class definition line, or by inheriting from an
+existing class that included such an argument. In the following example,
+both ``MyClass`` and ``MySubclass`` are instances of ``Meta``::
 
-* Modifying the class dictionary prior to the class being created.
+   class Meta(type):
+       pass
 
-* Returning an instance of another class -- essentially performing the role of a
-  factory function.
+   class MyClass(metaclass=Meta):
+       pass
 
-These steps will have to be performed in the metaclass's :meth:`__new__` method
--- :meth:`type.__new__` can then be called from this method to create a class
-with different properties.  This example adds a new element to the class
-dictionary before creating the class::
+   class MySubclass(MyClass):
+       pass
 
-  class metacls(type):
-      def __new__(mcs, name, bases, dict):
-          dict['foo'] = 'metacls was here'
-          return type.__new__(mcs, name, bases, dict)
+Any other keyword arguments that are specified in the class definition are
+passed through to all metaclass operations described below.
 
-You can of course also override other class methods (or add new methods); for
-example defining a custom :meth:`__call__` method in the metaclass allows custom
-behavior when the class is called, e.g. not always creating a new instance.
+When a class definition is executed, the following steps occur:
 
-If the metaclass has a :meth:`__prepare__` attribute (usually implemented as a
-class or static method), it is called before the class body is evaluated with
-the name of the class and a tuple of its bases for arguments.  It should return
-an object that supports the mapping interface that will be used to store the
-namespace of the class.  The default is a plain dictionary.  This could be used,
-for example, to keep track of the order that class attributes are declared in by
-returning an ordered dictionary.
+* the appropriate metaclass is determined
+* the class namespace is prepared
+* the class body is executed
+* the class object is created
 
-The appropriate metaclass is determined by the following precedence rules:
+Determining the appropriate metaclass
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-* If the ``metaclass`` keyword argument is passed with the bases, it is used.
+The appropriate metaclass for a class definition is determined as follows:
 
-* Otherwise, if there is at least one base class, its metaclass is used.
+* if no bases and no explicit metaclass are given, then :func:`type` is used
+* if an explicit metaclass is given and it is *not* an instance of
+  :func:`type`, then it is used directly as the metaclass
+* if an instance of :func:`type` is given as the explicit metaclass, or
+  bases are defined, then the most derived metaclass is used
 
-* Otherwise, the default metaclass (:class:`type`) is used.
+The most derived metaclass is selected from the explicitly specified
+metaclass (if any) and the metaclasses (i.e. ``type(cls)``) of all specified
+base classes. The most derived metaclass is one which is a subtype of *all*
+of these candidate metaclasses. If none of the candidate metaclasses meets
+that criterion, then the class definition will fail with ``TypeError``.
+
+
+Preparing the class namespace
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Once the appropriate metaclass has been identified, then the class namespace
+is prepared. If the metaclass has a ``__prepare__`` attribute, it is called
+as ``namespace = metaclass.__prepare__(name, bases, **kwds)`` (where the
+additional keyword arguments, if any, come from the class definition).
+
+If the metaclass has no ``__prepare__`` attribute, then the class namespace
+is initialised as an empty :func:`dict` instance.
+
+.. seealso::
+
+   :pep:`3115` - Metaclasses in Python 3000
+      Introduced the ``__prepare__`` namespace hook
+
+
+Executing the class body
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+The class body is executed (approximately) as
+``exec(body, globals(), namespace)``. The key difference from a normal
+call to :func:`exec` is that lexical scoping allows the class body (including
+any methods) to reference names from the current and outer scopes when the
+class definition occurs inside a function.
+
+However, even when the class definition occurs inside the function, methods
+defined inside the class still cannot see names defined at the class scope.
+Class variables must be accessed through the first parameter of instance or
+class methods, and cannot be accessed at all from static methods.
+
+
+Creating the class object
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Once the class namespace has been populated by executing the class body,
+the class object is created by calling
+``metaclass(name, bases, namespace, **kwds)`` (the additional keywords
+passed here are the same as those passed to ``__prepare__``).
+
+This class object is the one that will be referenced by the zero-argument
+form of :func:`super`. ``__class__`` is an implicit closure reference
+created by the compiler if any methods in a class body refer to either
+``__class__`` or ``super``. This allows the zero argument form of
+:func:`super` to correctly identify the class being defined based on
+lexical scoping, while the class or instance that was used to make the
+current call is identified based on the first argument passed to the method.
+
+After the class object is created, it is passed to the class decorators
+included in the class definition (if any) and the resulting object is bound
+in the local namespace as the defined class.
+
+.. seealso::
+
+   :pep:`3135` - New super
+      Describes the implicit ``__class__`` closure reference
+
+
+Metaclass example
+^^^^^^^^^^^^^^^^^
 
 The potential uses for metaclasses are boundless. Some ideas that have been
-explored including logging, interface checking, automatic delegation, automatic
+explored include logging, interface checking, automatic delegation, automatic
 property creation, proxies, frameworks, and automatic resource
 locking/synchronization.
 
@@ -1573,9 +1710,9 @@ to remember the order that class members were defined::
          def __prepare__(metacls, name, bases, **kwds):
             return collections.OrderedDict()
 
-         def __new__(cls, name, bases, classdict):
-            result = type.__new__(cls, name, bases, dict(classdict))
-            result.members = tuple(classdict)
+         def __new__(cls, name, bases, namespace, **kwds):
+            result = type.__new__(cls, name, bases, dict(namespace))
+            result.members = tuple(namespace)
             return result
 
     class A(metaclass=OrderedClass):
@@ -1631,10 +1768,10 @@ case the instance is itself a class.
 
    :pep:`3119` - Introducing Abstract Base Classes
       Includes the specification for customizing :func:`isinstance` and
-      :func:`issubclass` behavior through :meth:`__instancecheck__` and
-      :meth:`__subclasscheck__`, with motivation for this functionality in the
-      context of adding Abstract Base Classes (see the :mod:`abc` module) to the
-      language.
+      :func:`issubclass` behavior through :meth:`~class.__instancecheck__` and
+      :meth:`~class.__subclasscheck__`, with motivation for this functionality
+      in the context of adding Abstract Base Classes (see the :mod:`abc`
+      module) to the language.
 
 
 .. _callable-types:
@@ -1664,9 +1801,10 @@ a sequence, the allowable keys should be the integers *k* for which ``0 <= k <
 N`` where *N* is the length of the sequence, or slice objects, which define a
 range of items.  It is also recommended that mappings provide the methods
 :meth:`keys`, :meth:`values`, :meth:`items`, :meth:`get`, :meth:`clear`,
-:meth:`setdefault`, :meth:`pop`, :meth:`popitem`, :meth:`copy`, and
+:meth:`setdefault`, :meth:`pop`, :meth:`popitem`, :meth:`!copy`, and
 :meth:`update` behaving similar to those for Python's standard dictionary
-objects.  The :mod:`collections` module provides a :class:`MutableMapping`
+objects.  The :mod:`collections` module provides a
+:class:`~collections.abc.MutableMapping`
 abstract base class to help create those methods from a base set of
 :meth:`__getitem__`, :meth:`__setitem__`, :meth:`__delitem__`, and :meth:`keys`.
 Mutable sequences should provide methods :meth:`append`, :meth:`count`,
@@ -1889,11 +2027,13 @@ left undefined.
    ``&=``, ``^=``, ``|=``).  These methods should attempt to do the operation
    in-place (modifying *self*) and return the result (which could be, but does
    not have to be, *self*).  If a specific method is not defined, the augmented
-   assignment falls back to the normal methods.  For instance, to execute the
-   statement ``x += y``, where *x* is an instance of a class that has an
-   :meth:`__iadd__` method, ``x.__iadd__(y)`` is called.  If *x* is an instance
-   of a class that does not define a :meth:`__iadd__` method, ``x.__add__(y)``
-   and ``y.__radd__(x)`` are considered, as with the evaluation of ``x + y``.
+   assignment falls back to the normal methods.  For instance, if *x* is an
+   instance of a class with an :meth:`__iadd__` method, ``x += y`` is equivalent
+   to ``x = x.__iadd__(y)`` . Otherwise, ``x.__add__(y)`` and ``y.__radd__(x)``
+   are considered, as with the evaluation of ``x + y``. In certain situations,
+   augmented assignment can result in unexpected errors (see
+   :ref:`faq-augmented-assignment-tuple-error`), but this behavior is in
+   fact part of the data model.
 
 
 .. method:: object.__neg__(self)

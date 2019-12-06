@@ -56,6 +56,13 @@ The simplest way to use urllib.request is as follows::
     response = urllib.request.urlopen('http://python.org/')
     html = response.read()
 
+If you wish to retrieve a resource via URL and store it in a temporary location,
+you can do so via the :func:`~urllib.request.urlretrieve` function::
+
+    import urllib.request
+    local_filename, headers = urllib.request.urlretrieve('http://python.org/')
+    html = open(local_filename)
+
 Many uses of urllib will be that simple (note that instead of an 'http:' URL we
 could have used an URL starting with 'ftp:', 'file:', etc.).  However, it's the
 purpose of this tutorial to explain the more complicated cases, concentrating on
@@ -108,6 +115,7 @@ library. ::
               'language' : 'Python' }
 
     data = urllib.parse.urlencode(values)
+    data = data.encode('utf-8') # data should be bytes
     req = urllib.request.Request(url, data)
     response = urllib.request.urlopen(req)
     the_page = response.read()
@@ -136,7 +144,7 @@ This is done as follows::
     >>> data['location'] = 'Northampton'
     >>> data['language'] = 'Python'
     >>> url_values = urllib.parse.urlencode(data)
-    >>> print(url_values)
+    >>> print(url_values)  # The order may differ from below.  #doctest: +SKIP
     name=Somebody+Here&language=Python&location=Northampton
     >>> url = 'http://www.example.com/example.cgi'
     >>> full_url = url + '?' + url_values
@@ -152,7 +160,7 @@ We'll discuss here one particular HTTP header, to illustrate how to add headers
 to your HTTP request.
 
 Some websites [#]_ dislike being browsed by programs, or send different versions
-to different browsers [#]_ . By default urllib identifies itself as
+to different browsers [#]_. By default urllib identifies itself as
 ``Python-urllib/x.y`` (where ``x`` and ``y`` are the major and minor version
 numbers of the Python release,
 e.g. ``Python-urllib/2.5``), which may confuse the site, or just plain
@@ -172,7 +180,8 @@ Explorer [#]_. ::
               'language' : 'Python' }
     headers = { 'User-Agent' : user_agent }
 
-    data = urllib.parse.urlencode(values)
+    data  = urllib.parse.urlencode(values)
+    data = data.encode('utf-8')
     req = urllib.request.Request(url, data, headers)
     response = urllib.request.urlopen(req)
     the_page = response.read()
@@ -205,9 +214,9 @@ e.g. ::
 
     >>> req = urllib.request.Request('http://www.pretend_server.org')
     >>> try: urllib.request.urlopen(req)
-    >>> except urllib.error.URLError as e:
-    >>>    print(e.reason)
-    >>>
+    ... except urllib.error.URLError as e:
+    ...    print(e.reason)      #doctest: +SKIP
+    ...
     (4, 'getaddrinfo failed')
 
 
@@ -313,18 +322,17 @@ geturl, and info, methods as returned by the ``urllib.response`` module::
 
     >>> req = urllib.request.Request('http://www.python.org/fish.html')
     >>> try:
-    >>>     urllib.request.urlopen(req)
-    >>> except urllib.error.HTTPError as e:
-    >>>     print(e.code)
-    >>>     print(e.read())
-    >>>
+    ...     urllib.request.urlopen(req)
+    ... except urllib.error.HTTPError as e:
+    ...     print(e.code)
+    ...     print(e.read())  #doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
+    ...
     404
-    <!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN"
-        "http://www.w3.org/TR/html4/loose.dtd">
-    <?xml-stylesheet href="./css/ht2html.css"
-        type="text/css"?>
-    <html><head><title>Error 404: File Not Found</title>
-    ...... etc...
+    b'<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+      "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">\n\n\n<html
+      ...
+      <title>Page Not Found</title>\n
+      ...
 
 Wrapping it Up
 --------------
@@ -446,12 +454,12 @@ Authentication Tutorial
 
 When authentication is required, the server sends a header (as well as the 401
 error code) requesting authentication.  This specifies the authentication scheme
-and a 'realm'. The header looks like : ``Www-authenticate: SCHEME
+and a 'realm'. The header looks like: ``WWW-Authenticate: SCHEME
 realm="REALM"``.
 
 e.g. ::
 
-    Www-authenticate: Basic realm="cPanel Users"
+    WWW-Authenticate: Basic realm="cPanel Users"
 
 
 The client should then retry the request with the appropriate name and password
@@ -496,7 +504,8 @@ than the URL you pass to .add_password() will also match. ::
 
     In the above example we only supplied our ``HTTPBasicAuthHandler`` to
     ``build_opener``. By default openers have the handlers for normal situations
-    -- ``ProxyHandler``, ``UnknownHandler``, ``HTTPHandler``,
+    -- ``ProxyHandler`` (if a proxy setting such as an :envvar:`http_proxy`
+    environment variable is set), ``UnknownHandler``, ``HTTPHandler``,
     ``HTTPDefaultErrorHandler``, ``HTTPRedirectHandler``, ``FTPHandler``,
     ``FileHandler``, ``HTTPErrorProcessor``.
 
@@ -513,10 +522,11 @@ Proxies
 =======
 
 **urllib** will auto-detect your proxy settings and use those. This is through
-the ``ProxyHandler`` which is part of the normal handler chain. Normally that's
-a good thing, but there are occasions when it may not be helpful [#]_. One way
-to do this is to setup our own ``ProxyHandler``, with no proxies defined. This
-is done using similar steps to setting up a `Basic Authentication`_ handler : ::
+the ``ProxyHandler``, which is part of the normal handler chain when a proxy
+setting is detected.  Normally that's a good thing, but there are occasions
+when it may not be helpful [#]_. One way to do this is to setup our own
+``ProxyHandler``, with no proxies defined. This is done using similar steps to
+setting up a `Basic Authentication`_ handler: ::
 
     >>> proxy_support = urllib.request.ProxyHandler({})
     >>> opener = urllib.request.build_opener(proxy_support)
@@ -527,6 +537,11 @@ is done using similar steps to setting up a `Basic Authentication`_ handler : ::
     Currently ``urllib.request`` *does not* support fetching of ``https`` locations
     through a proxy.  However, this can be enabled by extending urllib.request as
     shown in the recipe [#]_.
+
+.. note::
+
+   `HTTP_PROXY`` will be ignored if a variable ``REQUEST_METHOD`` is set; see
+   the documentation on :func:`~urllib.request.getproxies`.
 
 
 Sockets and Layers

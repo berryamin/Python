@@ -70,7 +70,7 @@ static PyTypeObject EVPtype;
 
 
 #define DEFINE_CONSTS_FOR_NEW(Name)  \
-    static PyObject *CONST_ ## Name ## _name_obj; \
+    static PyObject *CONST_ ## Name ## _name_obj = NULL; \
     static EVP_MD_CTX CONST_new_ ## Name ## _ctx; \
     static EVP_MD_CTX *CONST_new_ ## Name ## _ctx_p = NULL;
 
@@ -201,13 +201,11 @@ EVP_hexdigest(EVPobject *self, PyObject *unused)
 
     /* Make hex version of the digest */
     for(i=j=0; i<digest_size; i++) {
-        char c;
+        unsigned char c;
         c = (digest[i] >> 4) & 0xf;
-        c = (c>9) ? c+'a'-10 : c + '0';
-        hex_digest[j++] = c;
+        hex_digest[j++] = Py_hexdigits[c];
         c = (digest[i] & 0xf);
-        c = (c>9) ? c+'a'-10 : c + '0';
-        hex_digest[j++] = c;
+        hex_digest[j++] = Py_hexdigits[c];
     }
     retval = PyUnicode_FromStringAndSize(hex_digest, digest_size * 2);
     PyMem_Free(hex_digest);
@@ -587,12 +585,15 @@ generate_hash_name_list(void)
                   " hash object; optionally initialized with a string") \
     }
 
-/* used in the init function to setup a constructor */
+/* used in the init function to setup a constructor: initialize OpenSSL
+   constructor constants if they haven't been initialized already.  */
 #define INIT_CONSTRUCTOR_CONSTANTS(NAME)  do { \
-    CONST_ ## NAME ## _name_obj = PyUnicode_FromString(#NAME); \
-    if (EVP_get_digestbyname(#NAME)) { \
-        CONST_new_ ## NAME ## _ctx_p = &CONST_new_ ## NAME ## _ctx; \
-        EVP_DigestInit(CONST_new_ ## NAME ## _ctx_p, EVP_get_digestbyname(#NAME)); \
+    if (CONST_ ## NAME ## _name_obj == NULL) { \
+        CONST_ ## NAME ## _name_obj = PyUnicode_FromString(#NAME); \
+        if (EVP_get_digestbyname(#NAME)) { \
+            CONST_new_ ## NAME ## _ctx_p = &CONST_new_ ## NAME ## _ctx; \
+            EVP_DigestInit(CONST_new_ ## NAME ## _ctx_p, EVP_get_digestbyname(#NAME)); \
+        } \
     } \
 } while (0);
 

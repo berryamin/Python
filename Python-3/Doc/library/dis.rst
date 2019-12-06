@@ -171,11 +171,6 @@ The Python compiler currently generates the following bytecode instructions.
 
 **General instructions**
 
-.. opcode:: STOP_CODE
-
-   Indicates end-of-code to the compiler, not used by the interpreter.
-
-
 .. opcode:: NOP
 
    Do nothing code.  Used as a placeholder by the bytecode optimizer.
@@ -436,6 +431,13 @@ the stack so that it is available for further iterations of the loop.
    Pops ``TOS`` and yields it from a :term:`generator`.
 
 
+.. opcode:: YIELD_FROM
+
+   Pops ``TOS`` and delegates to it as a subiterator from a :term:`generator`.
+
+   .. versionadded:: 3.3
+
+
 .. opcode:: IMPORT_STAR
 
    Loads all symbols not starting with ``'_'`` directly from the module TOS to the
@@ -658,10 +660,10 @@ the more significant byte last.
 
 .. opcode:: FOR_ITER (delta)
 
-   ``TOS`` is an :term:`iterator`.  Call its :meth:`__next__` method.  If this
-   yields a new value, push it on the stack (leaving the iterator below it).  If
-   the iterator indicates it is exhausted ``TOS`` is popped, and the byte code
-   counter is incremented by *delta*.
+   ``TOS`` is an :term:`iterator`.  Call its :meth:`~iterator.__next__` method.
+   If this yields a new value, push it on the stack (leaving the iterator below
+   it).  If the iterator indicates it is exhausted ``TOS`` is popped, and the
+   byte code counter is incremented by *delta*.
 
 
 .. opcode:: LOAD_GLOBAL (namei)
@@ -752,17 +754,26 @@ the more significant byte last.
 
 .. opcode:: MAKE_FUNCTION (argc)
 
-   Pushes a new function object on the stack.  TOS is the code associated with the
-   function.  The function object is defined to have *argc* default parameters,
-   which are found below TOS.
+   Pushes a new function object on the stack.  From bottom to top, the consumed
+   stack must consist of
+
+   * ``argc & 0xFF`` default argument objects in positional order
+   * ``(argc >> 8) & 0xFF`` pairs of name and default argument, with the name
+     just below the object on the stack, for keyword-only parameters
+   * ``(argc >> 16) & 0x7FFF`` parameter annotation objects
+   * a tuple listing the parameter names for the annotations (only if there are
+     ony annotation objects)
+   * the code associated with the function (at TOS1)
+   * the :term:`qualified name` of the function (at TOS)
 
 
 .. opcode:: MAKE_CLOSURE (argc)
 
    Creates a new function object, sets its *__closure__* slot, and pushes it on
-   the stack.  TOS is the code associated with the function, TOS1 the tuple
-   containing cells for the closure's free variables.  The function also has
-   *argc* default parameters, which are found below the cells.
+   the stack.  TOS is the :term:`qualified name` of the function, TOS1 is the
+   code associated with the function, and TOS2 is the tuple containing cells for
+   the closure's free variables.  The function also has *argc* default parameters,
+   which are found below the cells.
 
 
 .. opcode:: BUILD_SLICE (argc)
