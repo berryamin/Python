@@ -1,0 +1,43 @@
+#!/bin/bash
+
+
+
+OS_NAME=$(uname)
+
+[ $OS_NAME == Linux ] && source ~/bbndk-2.1.0/bbndk-env.sh
+[ $OS_NAME == Linux ] && export PBHOSTARCH=arm-unknown-nto-qnx6.5.0eabi
+[ $OS_NAME == Linux ] && export PBTARGETARCH=arm-unknown-nto-qnx6.5.0eabi
+
+[ $OS_NAME == Darwin ] && source /Applications/Momentics.app/bbndk-env_10_3_1_995.sh
+[ $OS_NAME == Darwin ] && export PBHOSTARCH=arm-unknown-nto-qnx8.0.0eabi
+[ $OS_NAME == Darwin ] && export PBTARGETARCH=arm-unknown-nto-qnx8.0.0eabi
+
+export PBBUILDARCH=`$PBHOSTARCH-gcc -dumpmachine`
+#export PBBUILDARCH=`$PBHOSTARCH-gcc -dumpmachine`
+
+[ $OS_NAME == Linux ] && echo PATH=$PATH 
+#[ $OS_NAME == Linux ] && export CC=$(type $PBHOSTARCH-gcc)
+
+[ $OS_NAME == Darwin ] && export PATH="/Applications/Momentics.app/host_10_3_1_12/darwin/x86/usr/bin:/Users/testuser/Library/Research In Motion/BlackBerry Native SDK/bin:/Applications/Momentics.app/features//jre/Contents/Home/bin:/Applications/Momentics.app/host_10_3_1_12/darwin/x86/usr/python32/bin:/Applications/Momentics.app/host_10_3_1_12/darwin/x86/usr/bin:/Users/testuser/Library/Research In Motion/BlackBerry Native SDK/bin:/Applications/Momentics.app/features/com.qnx.tools.jre.macosx.x86_64_1.7.0.51/jre/Contents/Home/bin:/Applications/Momentics.app/host_10_3_1_12/darwin/x86/usr/python32/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Library/Frameworks/Mono.framework/Versions/Current/Commands:/Applications/Momentics.app/host_10_3_1_12/darwin/x86/usr/bin:/Users/testuser/Library/Research In Motion/BlackBerry Native SDK/bin:/Applications/Momentics.app/features/com.qnx.tools.jre.macosx.x86_64_1.7.0.51/jre/Contents/Home/bin:/Applications/Momentics.app/host_10_3_1_12/darwin/x86/usr/python32/bin:~/xsh/bin"
+
+
+type hg || {
+	echo
+	echo "Warning: build process may need "hg" (aka Mercurial VCS)"
+	echo
+	#sleep 1
+}
+
+#export CFLAGS='-DDISABLE_ASDLGEN -DPY_FORMAT_LONG_LONG=\"ll\"' 
+#[ $OS_NAME == Linux ] && ../Python-3/configure --host=$PBHOSTARCH --target=$PBTARGETARCH --build=x86-unknown-linux CC=cc
+#[ $OS_NAME == Darwin ] && ../Python-3/configure --host=$PBHOSTARCH  --build=$PBBUILDARCH --target=$PBTARGETARCH --prefix=$PREFIX  CC=$PBTARGETARCH-gcc 
+
+CROSS_COMPILE_OPTS="--host=arm-unknown-nto-qnx8.0.0eabi --build=x86_64-linux-gnu --target=arm-unknown-nto-qnx8.0.0eabi"
+[ $OS_NAME == Linux ] && ../Python-3/configure $CROSS_COMPILE_OPTS
+
+for patch in $(ls ../patches/$OS_NAME/*patch)
+do
+	patch < $patch
+done
+
+make 
